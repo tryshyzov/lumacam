@@ -1,0 +1,4 @@
+Pillow>=10.4,<13
+av>=19,<20
+numpy>=2,<3
+pyvirtualcam>=0.14,<1
