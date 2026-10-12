@@ -2,7 +2,7 @@
 
 <p align="center"><img src="assets/LumaCam.png" alt="LumaLink Studio logo" width="240"></p>
 
-Windows desktop prototype for using an Android phone as a camera. The iOS companion and production installer are not implemented yet.
+Windows desktop prototype for using an Android phone as a camera. The iOS companion and production installer are not implemented yet. (Pure vibecoding.) 
 
 ## Run the desktop app
 
