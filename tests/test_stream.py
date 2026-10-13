@@ -1,18 +1,24 @@
+import errno
 import io
 import socket
 import struct
 import threading
 import unittest
+from unittest import mock
 
 from PIL import Image
 
 from camera_studio.stream import (
+    USB_DISCOVERY_REPLY,
+    USB_DISCOVERY_REQUEST,
     USB_FRAME_ACK,
     USB_PROTOCOL_MAGIC,
     CameraStreamServer,
     H264FrameReceiver,
     correct_stream_orientation,
+    discover_usb_camera,
     encode_control_payload,
+    local_network_blocked,
     read_video_packet,
 )
 
@@ -110,6 +116,130 @@ class H264TransportTests(unittest.TestCase):
             self.assertEqual(control_payloads, [encode_control_payload(command)])
         finally:
             receiver.stop()
+
+    def test_usb_receiver_falls_back_to_adb_when_tethering_is_blocked(self) -> None:
+        access_unit = b"\x00\x00\x00\x01\x65keyframe"
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        received = threading.Event()
+        stopped = threading.Event()
+        frames: list[bytes] = []
+        statuses: list[tuple[str, bool]] = []
+        forwarded_ports: list[int] = []
+        closed_forwards: list[bool] = []
+
+        class FakeForward:
+            port = listener.getsockname()[1]
+
+            def close(self) -> None:
+                closed_forwards.append(True)
+
+        def serve() -> None:
+            with listener:
+                client, _ = listener.accept()
+                with client:
+                    stream = client.makefile("rb")
+                    stream.read(len(USB_PROTOCOL_MAGIC))
+                    client.sendall(struct.pack("!I", len(access_unit)) + access_unit)
+                    stream.read(5)
+                    stopped.wait(2)
+
+        def open_forward(device_port: int) -> FakeForward:
+            forwarded_ports.append(device_port)
+            return FakeForward()
+
+        threading.Thread(target=serve, daemon=True).start()
+        receiver = H264FrameReceiver(
+            None,
+            8765,
+            lambda frame: (frames.append(frame), received.set()),
+            lambda message, is_error: statuses.append((message, is_error)),
+            usb=True,
+        )
+        with (
+            mock.patch(
+                "camera_studio.stream.discover_usb_camera",
+                side_effect=ConnectionError("Телефон не найден по USB."),
+            ),
+            mock.patch("camera_studio.stream.open_adb_forward", open_forward),
+        ):
+            receiver.start()
+            try:
+                self.assertTrue(received.wait(2))
+            finally:
+                receiver.stop()
+                receiver._thread.join(2)
+                stopped.set()
+
+        self.assertEqual(frames, [access_unit])
+        self.assertEqual(forwarded_ports, [8765])
+        self.assertEqual(closed_forwards, [True])
+        self.assertEqual([message for message, is_error in statuses if is_error], [])
+        self.assertIn(("Получаем H.264-видео по USB (ADB)…", False), statuses)
+
+    def test_detects_firewall_that_denies_local_network_connections(self) -> None:
+        class DeniedSocket:
+            def __init__(self, *_args: object) -> None:
+                pass
+
+            def setblocking(self, _flag: bool) -> None:
+                pass
+
+            def bind(self, _address: tuple[str, int]) -> None:
+                pass
+
+            def connect_ex(self, _address: tuple[str, int]) -> int:
+                raise PermissionError(errno.EACCES, "blocked by firewall")
+
+            def close(self) -> None:
+                pass
+
+        with mock.patch("camera_studio.stream.socket.socket", DeniedSocket):
+            self.assertTrue(local_network_blocked(["192.168.1.20"]))
+
+    def test_ignores_addresses_outside_the_local_network(self) -> None:
+        self.assertFalse(local_network_blocked(["127.0.0.1", "169.254.10.20", "8.8.8.8"]))
+
+    def test_discovers_phone_that_answers_usb_probe(self) -> None:
+        responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        responder.bind(("127.0.0.1", 0))
+        responder.settimeout(2)
+        requests: list[bytes] = []
+
+        def respond() -> None:
+            with responder:
+                request, sender = responder.recvfrom(64)
+                requests.append(request)
+                responder.sendto(USB_DISCOVERY_REPLY, sender)
+
+        responder_thread = threading.Thread(target=respond, daemon=True)
+        responder_thread.start()
+
+        address = discover_usb_camera(
+            threading.Event(),
+            timeout=2,
+            port=responder.getsockname()[1],
+            local_addresses=["127.0.0.1"],
+            broadcast_address="127.0.0.1",
+        )
+
+        responder_thread.join(2)
+        self.assertEqual(address, "127.0.0.1")
+        self.assertEqual(requests, [USB_DISCOVERY_REQUEST])
+
+    def test_reports_setup_help_when_no_phone_answers_usb_probe(self) -> None:
+        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        silent.bind(("127.0.0.1", 0))
+        with silent:
+            with self.assertRaisesRegex(ConnectionError, "USB-модем"):
+                discover_usb_camera(
+                    threading.Event(),
+                    timeout=0.3,
+                    port=silent.getsockname()[1],
+                    local_addresses=["127.0.0.1"],
+                    broadcast_address="127.0.0.1",
+                )
 
     def test_wifi_server_receives_h264_and_returns_camera_control(self) -> None:
         access_unit = b"\x00\x00\x00\x01\x65keyframe"

@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from camera_studio.adb import ADB_FILES
+
+# ADB is the VPN-proof fallback for the USB transport; see vendor/README.md.
+adb_binaries = [(f'vendor/platform-tools/{name}', 'platform-tools') for name in ADB_FILES]
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=adb_binaries,
     datas=[('assets/LumaCam.png', 'assets')],
     hiddenimports=[],
     hookspath=[],

@@ -1,18 +1,137 @@
+from __future__ import annotations
+
+import errno
 import json
 import http.client
+import ipaddress
+import select
 import socket
 import struct
+import subprocess
 import threading
+import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import BinaryIO
 
 from PIL import Image
 
+from camera_studio.adb import AdbForward, open_adb_forward
+
 
 USB_PROTOCOL_MAGIC = b"LUMAAVC1"
 USB_FRAME_ACK = b"\x06"
+USB_DISCOVERY_PORT = 8766
+USB_DISCOVERY_REQUEST = b"LUMALINK-DISCOVER-1"
+USB_DISCOVERY_REPLY = b"LUMALINK-CAMERA-1"
 MAX_FRAME_SIZE = 4_000_000
+LAN_PROBE_PORT = 9
+WSAEACCES = 10013
+
+
+def local_network_blocked(
+    local_addresses: Iterable[str] | None = None,
+    wait: float = 0.1,
+) -> bool:
+    """Tell whether a firewall, typically a VPN kill switch, blocks the LAN.
+
+    Such a filter rejects an outgoing connection at once with an access error,
+    while an allowed connection is still pending after ``wait`` seconds.
+    """
+    if local_addresses is None:
+        local_addresses = {
+            result[4][0]
+            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        }
+    probes: list[socket.socket] = []
+    try:
+        for address in local_addresses:
+            local = ipaddress.IPv4Address(address)
+            if local.is_loopback or local.is_link_local or not local.is_private:
+                continue
+            network = ipaddress.IPv4Network(f"{address}/24", strict=False)
+            neighbour = network.network_address + (2 if int(local) & 0xFF == 1 else 1)
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probes.append(probe)
+            try:
+                probe.setblocking(False)
+                probe.bind((address, 0))
+                probe.connect_ex((str(neighbour), LAN_PROBE_PORT))
+            except OSError as error:
+                if _is_access_denied(error.errno, getattr(error, "winerror", None)):
+                    return True
+        deadline = time.monotonic() + wait
+        while probes and time.monotonic() < deadline:
+            _, writable, failed = select.select([], probes, probes, 0.02)
+            for probe in {*writable, *failed}:
+                code = probe.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if _is_access_denied(code, code):
+                    return True
+                probes.remove(probe)
+                probe.close()
+    finally:
+        for probe in probes:
+            probe.close()
+    return False
+
+
+def _is_access_denied(error_number: int | None, windows_error: int | None) -> bool:
+    return error_number == errno.EACCES or windows_error == WSAEACCES
+
+
+def discover_usb_camera(
+    stop: threading.Event,
+    timeout: float = 6.0,
+    port: int = USB_DISCOVERY_PORT,
+    local_addresses: Iterable[str] | None = None,
+    broadcast_address: str = "255.255.255.255",
+) -> str:
+    """Find the phone on a USB-tethering network and return its address.
+
+    A probe is broadcast from every local IPv4 address; the phone answers
+    only senders that reach it through its USB-tethering interface.
+    """
+    if local_addresses is None:
+        local_addresses = {
+            result[4][0]
+            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+            if not ipaddress.IPv4Address(result[4][0]).is_loopback
+        }
+    probes: list[socket.socket] = []
+    try:
+        for address in local_addresses:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                probe.bind((address, 0))
+                probe.setblocking(False)
+            except OSError:
+                probe.close()
+                continue
+            probes.append(probe)
+
+        deadline = time.monotonic() + timeout
+        while probes and not stop.is_set() and time.monotonic() < deadline:
+            for probe in probes:
+                try:
+                    probe.sendto(USB_DISCOVERY_REQUEST, (broadcast_address, port))
+                except OSError:
+                    pass
+            readable, _, _ = select.select(probes, [], [], 0.5)
+            for probe in readable:
+                try:
+                    reply, sender = probe.recvfrom(64)
+                except OSError:
+                    continue
+                if reply == USB_DISCOVERY_REPLY:
+                    return sender[0]
+    finally:
+        for probe in probes:
+            probe.close()
+    raise ConnectionError(
+        "Телефон не найден по USB. Подключите кабель, включите на телефоне "
+        "«USB-модем» и нажмите «Начать трансляцию» в LumaLink Companion."
+    )
 
 
 def correct_stream_orientation(image: Image.Image) -> Image.Image:
@@ -23,7 +142,7 @@ def encode_control_payload(command: dict[str, object]) -> bytes:
     return json.dumps(command, separators=(",", ":")).encode("utf-8")
 
 
-def read_video_packet(stream: BinaryIO) -> bytes:
+def read_video_packet(stream: BinaryIO | _SocketReader) -> bytes:
     """Read one length-prefixed H.264 access unit."""
     header = _read_exactly(stream, 4, "Заголовок H.264-пакета получен не полностью")
     content_length = struct.unpack("!I", header)[0]
@@ -33,7 +152,37 @@ def read_video_packet(stream: BinaryIO) -> bytes:
     return _read_exactly(stream, content_length, "H.264-пакет получен не полностью")
 
 
-def _read_exactly(stream: BinaryIO, length: int, error_message: str) -> bytes:
+class _SocketReader:
+    """Unbuffered ``read`` over a socket.
+
+    Unlike ``makefile()``, it does not keep the socket open after ``close()``,
+    so closing from another thread interrupts a blocked read immediately.
+    """
+
+    def __init__(self, connection: socket.socket) -> None:
+        self._connection = connection
+
+    def read(self, size: int) -> bytes:
+        return self._connection.recv(size)
+
+
+def _close_now(connection: socket.socket) -> None:
+    """Close a socket so that a reader blocked in another thread wakes up.
+
+    ``close()`` alone is deferred while a ``makefile()`` object is still open.
+    """
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    connection.close()
+
+
+def _read_exactly(
+    stream: BinaryIO | _SocketReader,
+    length: int,
+    error_message: str,
+) -> bytes:
     data = bytearray()
     while len(data) < length:
         chunk = stream.read(length - len(data))
@@ -82,12 +231,14 @@ class CameraStreamServer:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-        if self._listener is not None:
-            self._listener.close()
-            self._listener = None
+        client = self._client
+        self._client = None
+        if client is not None:
+            _close_now(client)
+        listener = self._listener
+        self._listener = None
+        if listener is not None:
+            listener.close()
 
     def send_control(self, command: dict[str, object]) -> None:
         client = self._client
@@ -183,7 +334,7 @@ class CameraStreamServer:
 class H264FrameReceiver:
     def __init__(
         self,
-        host: str,
+        host: str | None,
         port: int,
         on_frame: Callable[[bytes], None],
         on_status: Callable[[str, bool], None],
@@ -196,6 +347,7 @@ class H264FrameReceiver:
         self._usb = usb
         self._stop = threading.Event()
         self._connection: socket.socket | None = None
+        self._adb_forward: AdbForward | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._send_lock = threading.Lock()
         self._pending_controls: deque[bytes] = deque(maxlen=1)
@@ -203,10 +355,35 @@ class H264FrameReceiver:
     def start(self) -> None:
         self._thread.start()
 
+    def _connect_to_usb_phone(self) -> socket.socket:
+        """Reach the phone over USB tethering, falling back to ADB.
+
+        A VPN kill switch can block the tethering network entirely; ADB does
+        not use the network stack beyond loopback, so it still gets through.
+        """
+        self._on_status("Ищем телефон по USB…", False)
+        try:
+            host = discover_usb_camera(self._stop, timeout=3.0)
+            return socket.create_connection((host, self._port), timeout=5)
+        except OSError as tethering_error:
+            if self._stop.is_set():
+                raise
+            self._on_status("Сеть USB-модема недоступна, пробуем ADB…", False)
+            try:
+                forward = open_adb_forward(self._port)
+            except (OSError, subprocess.SubprocessError) as adb_error:
+                raise ConnectionError(
+                    f"{tethering_error} Если сеть блокирует VPN, включите на телефоне "
+                    f"«Отладку по USB» — подключение пойдёт в обход VPN ({adb_error})."
+                ) from adb_error
+            self._adb_forward = forward
+            return socket.create_connection(("127.0.0.1", forward.port), timeout=5)
+
     def stop(self) -> None:
         self._stop.set()
-        if self._connection is not None:
-            self._connection.close()
+        connection = self._connection
+        if connection is not None:
+            _close_now(connection)
 
     def send_control(self, command: dict[str, object]) -> None:
         connection = self._connection
@@ -217,21 +394,30 @@ class H264FrameReceiver:
 
     def _run(self) -> None:
         try:
-            connection = socket.create_connection(
-                (self._host, self._port),
-                timeout=5,
-            )
+            host = self._host
+            if host is None:
+                connection = self._connect_to_usb_phone()
+            else:
+                connection = socket.create_connection(
+                    (host, self._port),
+                    timeout=5,
+                )
             self._connection = connection
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             connection.settimeout(5)
-            stream = connection.makefile("rb")
+            stream: BinaryIO | _SocketReader = _SocketReader(connection)
             if self._usb:
                 connection.sendall(USB_PROTOCOL_MAGIC)
-                self._on_status("Получаем H.264-видео по USB…", False)
+                self._on_status(
+                    "Получаем H.264-видео по USB (ADB)…"
+                    if self._adb_forward is not None
+                    else "Получаем H.264-видео по USB…",
+                    False,
+                )
             else:
                 connection.sendall(
                     b"POST /publish HTTP/1.1\r\n"
-                    + f"Host: {self._host}:{self._port}\r\n".encode("ascii")
+                    + f"Host: {host}:{self._port}\r\n".encode("ascii")
                     + b"Content-Type: application/x-lumalink-h264\r\n"
                     + b"Content-Length: 0\r\nConnection: keep-alive\r\n\r\n"
                 )
@@ -262,6 +448,11 @@ class H264FrameReceiver:
             self._connection = None
             if connection is not None:
                 connection.close()
+            forward = self._adb_forward
+            self._adb_forward = None
+            if forward is not None:
+                forward.close()
+
 
 class H264Decoder:
     def __init__(self) -> None:

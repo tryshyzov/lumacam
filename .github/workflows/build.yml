@@ -1,0 +1,77 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Windows desktop app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Fetch ADB
+        shell: pwsh
+        run: ./scripts/fetch-platform-tools.ps1
+
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean LumaLinkStudio.spec
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          & $iscc installer\LumaLinkStudio.iss
+
+      # Code signing goes here once the project is accepted by SignPath
+      # Foundation: submit the two artifacts below for signing and publish the
+      # signed copies instead. Until then the binaries are unsigned.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LumaLinkStudio-windows
+          path: |
+            dist/LumaLinkStudio.exe
+            dist/installer/*.exe
+          if-no-files-found: error
+
+  android:
+    name: Android companion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LumaLinkCompanion-android
+          path: android-app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
