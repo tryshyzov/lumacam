@@ -12,7 +12,11 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from camera_studio import ui  # noqa: E402
 from camera_studio.i18n import STRINGS, format_number, translate  # noqa: E402
-from camera_studio.pause_frame import paused_frame  # noqa: E402
+from camera_studio.pause_frame import (  # noqa: E402
+    paused_background,
+    paused_frame,
+    transition_frame,
+)
 from camera_studio.widgets import STYLE_SHEET  # noqa: E402
 
 
@@ -75,6 +79,20 @@ class PausedFrameTests(unittest.TestCase):
         self.assertEqual(frame.getpixel((632, 360)), (255, 255, 255))
         badge_red, _, _ = frame.getpixel((640, 322))
         self.assertLess(badge_red, 100)
+
+    def test_transition_runs_from_the_plain_picture_to_the_paused_frame(self) -> None:
+        source = Image.new("RGB", (1280, 720), (200, 100, 50))
+        background = paused_background(source)
+
+        start = transition_frame(source, background, 0.0)
+        middle = transition_frame(source, background, 0.5)
+        end = transition_frame(source, background, 1.0)
+
+        self.assertEqual(start.getpixel((640, 360)), (200, 100, 50))
+        self.assertEqual(middle.getpixel((20, 20)), (180, 90, 45))
+        self.assertEqual(end.tobytes(), paused_frame(source).tobytes())
+        # Half way the badge is smaller: its edge at full size is still picture.
+        self.assertEqual(middle.getpixel((640, 320)), (180, 90, 45))
 
     def test_keeps_small_frames_usable(self) -> None:
         self.assertEqual(paused_frame(Image.new("RGB", (16, 10))).size, (16, 10))
@@ -183,6 +201,53 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(window.preview.is_paused())
         window._receive_frame(b"packet")
         self.assertIsNot(camera.images[-1], still)
+
+    def test_virtual_camera_steps_through_the_pause_animation(self) -> None:
+        with mock.patch.object(ui, "animations_enabled", return_value=True):
+            self.connect_phone()
+            camera = FakeVirtualCamera.instances[0]
+            window = self.window
+
+            window._toggle_pause()
+            first = camera.images[-1]
+            self.assertEqual(first.getpixel((640, 360)), (10, 20, 30))
+
+            source, background, final, started = window.pause_fade
+            window.pause_fade = (source, background, final, started - 0.08)
+            window._step_pause_fade()
+            self.assertIsNot(camera.images[-1], final)
+            self.assertIsNotNone(window.pause_fade)
+
+            window.pause_fade = (source, background, final, started - 1.0)
+            window._step_pause_fade()
+            self.assertIs(camera.images[-1], final)
+            self.assertIsNone(window.pause_fade)
+            self.assertEqual(final.getpixel((632, 360)), (255, 255, 255))
+
+            # Resuming fades the overlay out over the live picture.
+            live = Image.new("RGB", (1280, 720), (90, 90, 90))
+            window.decoder = mock.Mock(decode=lambda _packet: [live])
+            with mock.patch.object(ui, "correct_stream_orientation", lambda image: image):
+                window._toggle_pause()
+                window._receive_frame(b"packet")
+                self.assertIsNot(camera.images[-1], live)
+                faded_background, resumed = window.resume_fade
+                window.resume_fade = (faded_background, resumed - 1.0)
+                window._receive_frame(b"packet")
+                self.assertIs(camera.images[-1], live)
+                self.assertIsNone(window.resume_fade)
+
+    def test_pause_is_instant_when_windows_animations_are_off(self) -> None:
+        with mock.patch.object(ui, "animations_enabled", return_value=False):
+            self.connect_phone()
+            camera = FakeVirtualCamera.instances[0]
+
+            self.window._toggle_pause()
+
+            self.assertIsNone(self.window.pause_fade)
+            self.assertEqual(camera.images[-1].getpixel((632, 360)), (255, 255, 255))
+            self.window._toggle_pause()
+            self.assertIsNone(self.window.resume_fade)
 
     def test_language_switch_keeps_the_words_the_phone_expects(self) -> None:
         window = self.window

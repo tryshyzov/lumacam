@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from camera_studio.pause_frame import PAUSE_IN_SECONDS, PAUSE_OUT_SECONDS
+
 # Palette measured from the prototype; see the mockup's review table.
 CHROME = "#626262"
 FRAME = "#3d3d3d"
@@ -347,8 +349,8 @@ def animations_enabled() -> bool:
 class Preview(QWidget):
     """The camera frame, letterboxed on black."""
 
-    PAUSE_IN_MS = 160
-    PAUSE_OUT_MS = 110
+    PAUSE_IN_MS = round(PAUSE_IN_SECONDS * 1000)
+    PAUSE_OUT_MS = round(PAUSE_OUT_SECONDS * 1000)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)

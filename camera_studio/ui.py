@@ -29,7 +29,14 @@ from PySide6.QtWidgets import (
 
 from camera_studio import __version__
 from camera_studio.i18n import LANGUAGE_NAMES, LANGUAGES, format_number, translate
-from camera_studio.pause_frame import paused_background, paused_frame
+from camera_studio.pause_frame import (
+    PAUSE_IN_SECONDS,
+    PAUSE_OUT_SECONDS,
+    ease_out,
+    paused_background,
+    paused_frame,
+    transition_frame,
+)
 from camera_studio.stream import (
     CameraStreamServer,
     H264Decoder,
@@ -57,6 +64,7 @@ from camera_studio.widgets import (
     Select,
     Slider,
     Switch,
+    animations_enabled,
     svg_icon,
     svg_pixmap,
 )
@@ -176,6 +184,11 @@ class MainWindow(QWidget):
         self.paused = False
         self.paused_image: Image.Image | None = None
         self.latest_image: Image.Image | None = None
+        # The virtual camera's copy of the pause animation: what is fading,
+        # and when it started. ``None`` when nothing is in transition.
+        self.pause_fade: tuple[Image.Image, Image.Image, Image.Image, float] | None = None
+        self.resume_fade: tuple[Image.Image, float] | None = None
+        self._paused_background: Image.Image | None = None
         self.frame_size = (0, 0)
         self.measured_fps = 0.0
         self.link = "USB"
@@ -209,6 +222,9 @@ class MainWindow(QWidget):
         self.control_timer.setSingleShot(True)
         self.control_timer.setInterval(120)
         self.control_timer.timeout.connect(self._send_camera_control)
+        self.pause_fade_timer = QTimer(self)
+        self.pause_fade_timer.setInterval(33)  # the virtual camera runs at 30 fps
+        self.pause_fade_timer.timeout.connect(self._step_pause_fade)
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(16)
         self.poll_timer.timeout.connect(self._poll_stream)
@@ -856,6 +872,10 @@ class MainWindow(QWidget):
         self.paused = False
         self.paused_image = None
         self.latest_image = None
+        self.pause_fade = None
+        self.resume_fade = None
+        self._paused_background = None
+        self.pause_fade_timer.stop()
         self._stop_virtual_camera()
         self.frame_timestamps.clear()
         self.frame_size = (0, 0)
@@ -901,7 +921,7 @@ class MainWindow(QWidget):
                 continue
             self.latest_image = image
             if virtual_camera is not None:
-                virtual_camera.submit(image)
+                virtual_camera.submit(self._fading_out(image))
             try:
                 self.frames.put_nowait(image)
             except queue.Full:
@@ -917,22 +937,64 @@ class MainWindow(QWidget):
     def _toggle_pause(self) -> None:
         if not self.camera_connected:
             return
+        animate = animations_enabled()
+        self.pause_fade_timer.stop()
         if self.paused:
+            background = self.pause_fade[1] if self.pause_fade else self._paused_background
             self.paused = False
             self.paused_image = None
+            self.pause_fade = None
+            self.resume_fade = (background, time.monotonic()) if animate and background else None
             self.preview.set_pause(None)
         else:
             source = self.latest_image
             if source is None:
                 return
-            self.paused_image = paused_frame(source)
+            background = paused_background(source)
+            final = paused_frame(source)
+            self._paused_background = background
+            self.resume_fade = None
+            # The virtual camera steps through the same transition as the
+            # preview; the network thread forwards whichever step is current.
+            self.paused_image = transition_frame(source, background, 0.0) if animate else final
+            self.pause_fade = (source, background, final, time.monotonic()) if animate else None
             self.paused = True
-            # The preview animates the badge itself over the plain still frame.
             self.preview.set_image(source)
-            self.preview.set_pause(paused_background(source))
+            self.preview.set_pause(background)
             if self.virtual_camera is not None:
                 self.virtual_camera.submit(self.paused_image)
+            if animate:
+                self.pause_fade_timer.start()
         self._refresh()
+
+    def _step_pause_fade(self) -> None:
+        """Advance the virtual camera's pause animation by one frame."""
+        fade = self.pause_fade
+        if fade is None or not self.paused:
+            self.pause_fade_timer.stop()
+            return
+        source, background, final, started = fade
+        progress = (time.monotonic() - started) / PAUSE_IN_SECONDS
+        if progress >= 1.0:
+            self.paused_image = final
+            self.pause_fade = None
+            self.pause_fade_timer.stop()
+        else:
+            self.paused_image = transition_frame(source, background, ease_out(progress))
+        if self.virtual_camera is not None:
+            self.virtual_camera.submit(self.paused_image)
+
+    def _fading_out(self, image: Image.Image) -> Image.Image:
+        """The live picture, with the pause overlay still fading right after a resume."""
+        fade = self.resume_fade
+        if fade is None:
+            return image
+        background, started = fade
+        progress = (time.monotonic() - started) / PAUSE_OUT_SECONDS
+        if progress >= 1.0:
+            self.resume_fade = None
+            return image
+        return transition_frame(image, background, 1.0 - ease_out(progress))
 
     def _start_virtual_camera(self) -> None:
         """Feed the virtual camera for as long as the phone is connected.
