@@ -10,9 +10,15 @@ _BADGE_OPACITY = 0.6
 def paused_frame(image: Image.Image) -> Image.Image:
     """Blur and dim ``image`` and put a pause badge in its center.
 
-    The same picture goes to the preview and to the virtual camera, so
-    everyone watching sees that the stream is paused.
+    This is the picture the virtual camera shows, so everyone watching sees
+    that the stream is paused. The preview draws the same badge itself, over
+    :func:`paused_background`, to animate it.
     """
+    return _with_badge(paused_background(image))
+
+
+def paused_background(image: Image.Image) -> Image.Image:
+    """The blurred, dimmed still frame without the badge."""
     source = image.convert("RGB")
     width, height = source.size
 
@@ -23,8 +29,11 @@ def paused_frame(image: Image.Image) -> Image.Image:
     )
     small = small.filter(ImageFilter.GaussianBlur(radius=max(1.0, height / 160)))
     frame = small.resize((width, height), Image.Resampling.BICUBIC)
-    frame = Image.blend(frame, Image.new("RGB", (width, height)), _DIM)
+    return Image.blend(frame, Image.new("RGB", (width, height)), _DIM)
 
+
+def _with_badge(frame: Image.Image) -> Image.Image:
+    width, height = frame.size
     # Badge geometry follows the mockup: an 88 px circle on a 720 px frame
     # holding two bars from a 30 px icon. Drawn at 4x for smooth edges.
     scale = 4

@@ -170,6 +170,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(window.paused)
         self.assertIs(camera.images[-1], still)
         self.assertEqual(window.preview.note, "Пауза · стоп-кадр")
+        self.assertTrue(window.preview.is_paused())
 
         # New frames from the phone do not replace the still frame.
         window.decoder = mock.Mock(decode=lambda _packet: [Image.new("RGB", (1280, 720), "red")])
@@ -179,6 +180,7 @@ class MainWindowTests(unittest.TestCase):
 
         window._toggle_pause()
         self.assertFalse(window.paused)
+        self.assertFalse(window.preview.is_paused())
         window._receive_frame(b"packet")
         self.assertIsNot(camera.images[-1], still)
 

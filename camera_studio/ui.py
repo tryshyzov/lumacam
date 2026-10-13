@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from camera_studio import __version__
 from camera_studio.i18n import LANGUAGE_NAMES, LANGUAGES, format_number, translate
-from camera_studio.pause_frame import paused_frame
+from camera_studio.pause_frame import paused_background, paused_frame
 from camera_studio.stream import (
     CameraStreamServer,
     H264Decoder,
@@ -864,6 +864,7 @@ class MainWindow(QWidget):
             self.frames.get_nowait()
         except queue.Empty:
             pass
+        self.preview.set_pause(None, animate=False)
         self.preview.set_image(None)
 
     @staticmethod
@@ -919,13 +920,16 @@ class MainWindow(QWidget):
         if self.paused:
             self.paused = False
             self.paused_image = None
+            self.preview.set_pause(None)
         else:
             source = self.latest_image
             if source is None:
                 return
             self.paused_image = paused_frame(source)
             self.paused = True
-            self.preview.set_image(self.paused_image)
+            # The preview animates the badge itself over the plain still frame.
+            self.preview.set_image(source)
+            self.preview.set_pause(paused_background(source))
             if self.virtual_camera is not None:
                 self.virtual_camera.submit(self.paused_image)
         self._refresh()

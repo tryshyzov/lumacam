@@ -319,14 +319,49 @@ class ProfileButton(QAbstractButton):
         super().leaveEvent(event)
 
 
+def _to_qimage(image: Image.Image) -> tuple[QImage, bytes]:
+    source = image if image.mode == "RGB" else image.convert("RGB")
+    # QImage does not copy the buffer, so the caller keeps the bytes alive.
+    pixels = source.tobytes()
+    return (
+        QImage(pixels, source.width, source.height, source.width * 3, QImage.Format.Format_RGB888),
+        pixels,
+    )
+
+
+def animations_enabled() -> bool:
+    """Whether Windows is set to show animations (an accessibility setting)."""
+    try:
+        import ctypes
+
+        enabled = ctypes.c_int(1)
+        spi_getclientareaanimation = 0x1042
+        ctypes.windll.user32.SystemParametersInfoW(
+            spi_getclientareaanimation, 0, ctypes.byref(enabled), 0
+        )
+        return bool(enabled.value)
+    except (AttributeError, OSError):
+        return True
+
+
 class Preview(QWidget):
     """The camera frame, letterboxed on black."""
+
+    PAUSE_IN_MS = 160
+    PAUSE_OUT_MS = 110
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(320, 180)
         self._image: QImage | None = None
         self._pixels: bytes | None = None
+        self._pause_image: QImage | None = None
+        self._pause_pixels: bytes | None = None
+        self._pause_amount = 0.0
+        self._pause_animation = QVariantAnimation(self)
+        self._pause_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._pause_animation.valueChanged.connect(self._set_pause_amount)
+        self._pause_animation.finished.connect(self._pause_animation_finished)
         self.show_grid = True
         self.mirrored = False
         self.note = ""
@@ -338,17 +373,37 @@ class Preview(QWidget):
             self._image = None
             self._pixels = None
         else:
-            source = image if image.mode == "RGB" else image.convert("RGB")
-            # QImage does not copy the buffer, so the bytes are kept alive here.
-            self._pixels = source.tobytes()
-            self._image = QImage(
-                self._pixels,
-                source.width,
-                source.height,
-                source.width * 3,
-                QImage.Format.Format_RGB888,
-            )
+            self._image, self._pixels = _to_qimage(image)
         self.update()
+
+    def set_pause(self, background: Image.Image | None, animate: bool = True) -> None:
+        """Fade the blurred still frame and the pause badge in, or out with ``None``."""
+        showing = background is not None
+        if showing:
+            self._pause_image, self._pause_pixels = _to_qimage(background)
+        self._pause_animation.stop()
+        target = 1.0 if showing else 0.0
+        if not animate or not self.isVisible() or not animations_enabled():
+            self._set_pause_amount(target)
+            self._pause_animation_finished()
+            return
+        self._pause_animation.setDuration(self.PAUSE_IN_MS if showing else self.PAUSE_OUT_MS)
+        self._pause_animation.setStartValue(self._pause_amount)
+        self._pause_animation.setEndValue(target)
+        self._pause_animation.start()
+
+    def is_paused(self) -> bool:
+        return self._pause_image is not None
+
+    def _set_pause_amount(self, amount: float) -> None:
+        self._pause_amount = float(amount)
+        self.update()
+
+    def _pause_animation_finished(self) -> None:
+        if self._pause_amount <= 0.0:
+            self._pause_image = None
+            self._pause_pixels = None
+            self.update()
 
     def has_image(self) -> bool:
         return self._image is not None
@@ -373,10 +428,16 @@ class Preview(QWidget):
             painter.save()
             painter.translate(frame.left() + frame.right(), 0)
             painter.scale(-1, 1)
-            painter.drawImage(frame, self._image)
+        painter.drawImage(frame, self._image)
+        pausing = self._pause_image is not None and self._pause_amount > 0
+        if pausing:
+            painter.setOpacity(self._pause_amount)
+            painter.drawImage(frame, self._pause_image)
+            painter.setOpacity(1.0)
+        if self.mirrored:
             painter.restore()
-        else:
-            painter.drawImage(frame, self._image)
+        if pausing:
+            self._paint_pause_badge(painter, frame)
 
         if self.show_grid:
             painter.setPen(QPen(QColor(255, 255, 255, 36), 1))
@@ -387,6 +448,32 @@ class Preview(QWidget):
                 painter.drawLine(QPointF(frame.left(), y), QPointF(frame.right(), y))
         if self.note:
             self._paint_note(painter, frame)
+
+    def _paint_pause_badge(self, painter: QPainter, frame: QRectF) -> None:
+        """The badge of pause_frame.paused_frame, growing and fading in."""
+        amount = self._pause_amount
+        diameter = frame.height() * 88 / 720 * (0.6 + 0.4 * amount)
+        unit = diameter / 88
+        center = frame.center()
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(amount)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 153))
+        painter.drawEllipse(center, diameter / 2, diameter / 2)
+        painter.setBrush(QColor(TEXT))
+        for bar_start in (6.0, 17.5):
+            painter.drawRoundedRect(
+                QRectF(
+                    center.x() + (bar_start - 15) * unit,
+                    center.y() - 11 * unit,
+                    6.5 * unit,
+                    22 * unit,
+                ),
+                1.5 * unit,
+                1.5 * unit,
+            )
+        painter.restore()
 
     def _paint_note(self, painter: QPainter, frame: QRectF) -> None:
         font = ui_font(12)
