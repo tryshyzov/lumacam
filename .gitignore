@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller and Inno Setup output
+/build/
+/dist/
+installer/dist/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+android-app/build/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Downloaded by scripts/fetch-platform-tools.ps1
+vendor/platform-tools/
+
+# Editor and local tool state
+.idea/
+.claude/settings.local.json

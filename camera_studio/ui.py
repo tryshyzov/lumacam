@@ -1,8 +1,6 @@
 import ipaddress
 import queue
 import socket
-import shutil
-import subprocess
 import time
 import tkinter as tk
 from collections import deque
@@ -17,11 +15,13 @@ from camera_studio.stream import (
     H264Decoder,
     H264FrameReceiver,
     correct_stream_orientation,
+    local_network_blocked,
 )
 from camera_studio.virtual_camera import VirtualCameraOutput
 
 
 STREAM_PORT = 8765
+HINT_COLOR = "#747d8a"
 
 
 COLORS = {
@@ -49,7 +49,6 @@ class CameraStudioApp:
         self.receiver: H264FrameReceiver | None = None
         self.virtual_camera: VirtualCameraOutput | None = None
         self.decoder = H264Decoder()
-        self.usb_forward: tuple[Path, str] | None = None
         self.preview_image: ImageTk.PhotoImage | None = None
         logo_path = Path(__file__).resolve().parents[1] / "assets" / "LumaCam.png"
         self.logo_image = ImageTk.PhotoImage(
@@ -662,9 +661,11 @@ class CameraStudioApp:
         )
         self.connection_hint.configure(
             text=(
-                "USB: подключение через подтверждённую ADB-отладку. "
+                "USB: включите на телефоне «USB-модем» — компьютер найдёт его сам "
+                "(может использоваться мобильный интернет телефона). "
                 "Wi-Fi без пароля: подключайтесь только к доверенной сети."
-            )
+            ),
+            fg=HINT_COLOR,
         )
 
     def _toggle_connection(self) -> None:
@@ -676,34 +677,40 @@ class CameraStudioApp:
                 self.receiver.stop()
                 self.receiver = None
             self.streaming = False
-            forward_error = self._remove_usb_forward()
+            self.camera_connected = False
+            self._set_camera_controls_enabled(False)
+            self.frame_timestamps.clear()
+            try:
+                self.frames.get_nowait()
+            except queue.Empty:
+                pass
             self.connect_button.configure(text="Подключить камеру")
-            self._set_status(
-                forward_error or "Ожидание телефона остановлено",
-                forward_error is not None,
-            )
+            self._set_status("Ожидание телефона остановлено", False)
             return
 
         self.decoder = H264Decoder()
+        vpn_blocks_lan = local_network_blocked()
         if self.mode.get() == ConnectionMode.USB.value:
-            try:
-                self._prepare_usb_connection()
-            except (OSError, subprocess.SubprocessError, ConnectionError) as error:
-                self._set_status(str(error), True)
-                return
             self.receiver = H264FrameReceiver(
-                "127.0.0.1",
+                None,
                 STREAM_PORT,
                 self._receive_frame,
                 self._receive_status,
                 usb=True,
             )
+            self.streaming = True
             self.receiver.start()
             self.connection_hint.configure(
                 text=(
-                    "USB forward настроен. На телефоне укажите 127.0.0.1 "
-                    "и включите трансляцию. Используется быстрый бинарный USB-протокол."
-                )
+                    "VPN на этом компьютере блокирует локальную сеть, поэтому "
+                    "«USB-модем» не сработает. Включите на телефоне «Отладку по USB» — "
+                    "подключение пойдёт в обход VPN. Либо добавьте LumaLink Studio "
+                    "в исключения VPN (раздельное туннелирование)."
+                    if vpn_blocks_lan
+                    else "На телефоне включите «USB-модем», оставьте поле IP пустым "
+                    "и нажмите «Начать трансляцию»."
+                ),
+                fg=COLORS["warning"] if vpn_blocks_lan else HINT_COLOR,
             )
         else:
             host = self.host_entry.get().strip()
@@ -724,9 +731,11 @@ class CameraStudioApp:
                 self._receive_status,
                 host=host,
             )
+            self.streaming = True
             try:
                 self.stream_server.start()
             except OSError as error:
+                self.streaming = False
                 self.stream_server = None
                 self._set_status(f"Не удалось открыть порт {STREAM_PORT}: {error}", True)
                 return
@@ -735,95 +744,23 @@ class CameraStudioApp:
             text="Отключить камеру" if self.receiver is not None else "Остановить ожидание"
         )
         self._set_status(
-            "Подключаемся к локальной камере через ADB…" if self.receiver is not None
+            "Ищем телефон по USB…" if self.receiver is not None
             else "Запущено ожидание телефона…",
             False,
         )
         if self.mode.get() == ConnectionMode.WIFI.value:
             self.connection_hint.configure(
                 text=(
-                    f"На телефоне введите IP компьютера {host}:{STREAM_PORT} "
+                    "VPN на этом компьютере блокирует локальную сеть: телефон не сможет "
+                    "подключиться по Wi-Fi. Добавьте LumaLink Studio в исключения VPN "
+                    "(раздельное туннелирование) или разрешите в VPN доступ к локальной "
+                    "сети. Без этого работает только USB с «Отладкой по USB»."
+                    if vpn_blocks_lan
+                    else f"На телефоне введите IP компьютера {host}:{STREAM_PORT} "
                     "и нажмите «Начать трансляцию». Без кода доступа — только доверенная сеть."
-                )
+                ),
+                fg=COLORS["warning"] if vpn_blocks_lan else HINT_COLOR,
             )
-
-    def _prepare_usb_connection(self) -> None:
-        adb = self._find_adb()
-        if adb is None:
-            raise ConnectionError(
-                "ADB не найден. Установите Android Platform-Tools и добавьте ADB в PATH."
-            )
-        result = subprocess.run(
-            [str(adb), "devices"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-        devices = [
-            line.split()[0]
-            for line in result.stdout.splitlines()[1:]
-            if len(line.split()) >= 2 and line.split()[1] == "device"
-        ]
-        if not devices:
-            raise ConnectionError(
-                "Телефон не найден через ADB. Подключите USB и подтвердите отладку."
-            )
-        result = subprocess.run(
-            [
-                str(adb),
-                "-s",
-                devices[0],
-                "forward",
-                f"tcp:{STREAM_PORT}",
-                "localabstract:lumalink_camera_stream",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            raise ConnectionError(result.stderr.strip() or "Не удалось настроить USB forward")
-        self.usb_forward = (adb, devices[0])
-
-    def _remove_usb_forward(self) -> str | None:
-        if self.usb_forward is None:
-            return None
-        adb, serial = self.usb_forward
-        self.usb_forward = None
-        try:
-            subprocess.run(
-                [
-                    str(adb),
-                    "-s",
-                    serial,
-                    "forward",
-                    "--remove",
-                    f"tcp:{STREAM_PORT}",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            return f"Не удалось закрыть USB-forward: {error}"
-        return None
-
-    @staticmethod
-    def _find_adb() -> Path | None:
-        adb_path = shutil.which("adb")
-        if adb_path:
-            return Path(adb_path)
-
-        local_app_data = Path.home() / "AppData" / "Local"
-        package_root = local_app_data / "Microsoft" / "WinGet" / "Packages"
-        for package in package_root.glob("Google.PlatformTools*"):
-            executable = package / "platform-tools" / "adb.exe"
-            if executable.is_file():
-                return executable
-        return None
 
     @staticmethod
     def _local_ipv4_addresses() -> list[str]:
@@ -842,6 +779,8 @@ class CameraStudioApp:
         ) or ["127.0.0.1"]
 
     def _receive_frame(self, frame: bytes) -> None:
+        if not self.streaming:
+            return
         for image in self.decoder.decode(frame):
             image = correct_stream_orientation(image)
             if self.virtual_camera is not None:
@@ -937,7 +876,6 @@ class CameraStudioApp:
                 self.receiver.stop()
                 self.receiver = None
                 self.streaming = False
-                self._remove_usb_forward()
                 self.connect_button.configure(text="Подключить камеру")
 
         try:
@@ -1003,7 +941,6 @@ class CameraStudioApp:
         if self.virtual_camera is not None:
             self.virtual_camera.stop()
             self.virtual_camera = None
-        self._remove_usb_forward()
         self.root.destroy()
 
 

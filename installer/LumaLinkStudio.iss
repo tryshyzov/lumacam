@@ -1,4 +1,4 @@
-#define AppName "LumaLink Studio"
+﻿#define AppName "LumaLink Studio"
 #define AppVersion "0.1.0"
 #define AppExe "..\dist\LumaLinkStudio.exe"
 

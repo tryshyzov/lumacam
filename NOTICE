@@ -1,0 +1,15 @@
+LumaLink
+Copyright 2026 LumaLink contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party components:
+
+- Android SDK Platform-Tools (adb), bundled with the Windows executable.
+  Copyright The Android Open Source Project. Apache License 2.0; the full
+  notices ship in vendor/platform-tools/NOTICE.txt.
+
+- driver/avstream is a deprecated prototype derived from the Microsoft AVStream
+  sample driver and remains under the Microsoft Public License
+  (driver/avstream/LICENSE-MS-PL.txt). It is not built or distributed with the
+  application.
