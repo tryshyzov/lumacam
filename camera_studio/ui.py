@@ -58,7 +58,10 @@ class CameraStudioApp:
             Image.open(logo_path).resize((64, 64), Image.Resampling.LANCZOS)
         )
         self.frame_timestamps: deque[float] = deque(maxlen=30)
-        self.virtual_camera_status_messages: queue.Queue[tuple[str, bool]] = queue.Queue()
+        self.virtual_camera_status_messages: queue.Queue[tuple[int, str, bool]] = queue.Queue()
+        self.virtual_camera_run = 0
+        self.virtual_camera_device = ""
+        self.virtual_camera_failed = False
         self.streaming = False
         self.camera_connected = False
         self.control_after_id: str | None = None
@@ -218,27 +221,6 @@ class CameraStudioApp:
             bg=COLORS["panel"],
         )
         self.status_label.pack(side="left")
-        self.virtual_camera_button = tk.Button(
-            heading,
-            text="Запустить виртуальную камеру",
-            command=self._toggle_virtual_camera,
-            font=("Segoe UI", 9, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["accent"],
-            activeforeground=COLORS["text"],
-            activebackground=COLORS["accent_hover"],
-            relief="flat",
-            padx=12,
-            pady=8,
-            cursor="hand2",
-        )
-        self.virtual_camera_button.grid(
-            row=0,
-            column=1,
-            rowspan=2,
-            sticky="e",
-            padx=(12, 16),
-        )
 
     def _build_preview(self, parent: tk.Frame) -> None:
         area = tk.Frame(parent, background=COLORS["background"])
@@ -678,6 +660,7 @@ class CameraStudioApp:
                 self.receiver = None
             self.streaming = False
             self.camera_connected = False
+            self._stop_virtual_camera()
             self._set_camera_controls_enabled(False)
             self.frame_timestamps.clear()
             try:
@@ -689,6 +672,7 @@ class CameraStudioApp:
             return
 
         self.decoder = H264Decoder()
+        self.virtual_camera_failed = False
         vpn_blocks_lan = local_network_blocked()
         if self.mode.get() == ConnectionMode.USB.value:
             self.receiver = H264FrameReceiver(
@@ -784,8 +768,9 @@ class CameraStudioApp:
             return
         for image in self.decoder.decode(frame):
             image = correct_stream_orientation(image)
-            if self.virtual_camera is not None:
-                self.virtual_camera.submit(image)
+            virtual_camera = self.virtual_camera
+            if virtual_camera is not None:
+                virtual_camera.submit(image)
             try:
                 self.frames.put_nowait(image)
             except queue.Full:
@@ -798,67 +783,45 @@ class CameraStudioApp:
     def _receive_status(self, message: str, is_error: bool) -> None:
         self.status_messages.put((message, is_error))
 
-    def _receive_virtual_camera_status(self, message: str, is_error: bool) -> None:
-        self.virtual_camera_status_messages.put((message, is_error))
+    def _start_virtual_camera(self) -> None:
+        """Feed the virtual camera for as long as the phone is connected.
 
-    def _toggle_virtual_camera(self) -> None:
-        if self.virtual_camera is not None:
-            output = self.virtual_camera
-            self.virtual_camera = None
-            output.stop()
-            self.virtual_camera_button.configure(text="Запустить виртуальную камеру")
-            self._set_status(
-                "Камера подключена" if self.camera_connected else "Виртуальная камера остановлена",
-                False,
-                connected=self.camera_connected,
-            )
+        Without a feed the camera shows its idle image on its own, so it
+        needs no manual switch.
+        """
+        if self.virtual_camera is not None or self.virtual_camera_failed:
             return
-
-        output = VirtualCameraOutput(self._receive_virtual_camera_status)
-        self.virtual_camera = output
-        self.virtual_camera_button.configure(
-            text="Запуск виртуальной камеры…",
-            state="disabled",
+        self.virtual_camera_run += 1
+        run = self.virtual_camera_run
+        self.virtual_camera = VirtualCameraOutput(
+            lambda message, is_error: self.virtual_camera_status_messages.put(
+                (run, message, is_error)
+            )
         )
-        output.start()
+        self.virtual_camera.start()
+
+    def _stop_virtual_camera(self) -> None:
+        output = self.virtual_camera
+        self.virtual_camera = None
+        self.virtual_camera_device = ""
+        if output is not None:
+            output.stop()
 
     def _poll_stream(self) -> None:
         while True:
             try:
-                message, is_error = self.virtual_camera_status_messages.get_nowait()
+                run, message, is_error = self.virtual_camera_status_messages.get_nowait()
             except queue.Empty:
                 break
-            if message.startswith("Виртуальная камера запущена"):
-                self.virtual_camera_button.configure(
-                    text="Остановить виртуальную камеру",
-                    state="normal",
-                )
-                self._set_status(
-                    message,
-                    False,
-                    connected=self.camera_connected,
-                )
-            elif message.startswith("Виртуальная камера остановлена"):
-                self.virtual_camera_button.configure(
-                    text="Запустить виртуальную камеру",
-                    state="normal",
-                )
-                if self.virtual_camera is not None:
-                    self.virtual_camera = None
-                self._set_status(
-                    "Камера подключена" if self.camera_connected else message,
-                    False,
-                    connected=self.camera_connected,
-                )
-            elif is_error:
-                if self.virtual_camera is not None:
-                    self.virtual_camera.stop()
-                    self.virtual_camera = None
-                self.virtual_camera_button.configure(
-                    text="Запустить виртуальную камеру",
-                    state="normal",
-                )
+            if run != self.virtual_camera_run:
+                continue
+            if is_error:
+                # Do not retry on every frame; the next connection tries again.
+                self.virtual_camera_failed = True
+                self._stop_virtual_camera()
                 self._set_status(message, True)
+            elif message.startswith("Виртуальная камера запущена: "):
+                self.virtual_camera_device = message.partition(": ")[2]
 
         while True:
             try:
@@ -872,6 +835,7 @@ class CameraStudioApp:
             )
             if is_error:
                 self.camera_connected = False
+                self._stop_virtual_camera()
                 self._set_camera_controls_enabled(False)
             if is_error and self.receiver is not None:
                 self.receiver.stop()
@@ -911,7 +875,14 @@ class CameraStudioApp:
                     self.camera_connected = True
                     self._set_camera_controls_enabled(True)
                     self._send_camera_control()
-                self._set_status("Камера подключена", False, connected=True)
+                    self._start_virtual_camera()
+                if not self.virtual_camera_failed:
+                    self._set_status(
+                        "Камера подключена"
+                        + (f" · {self.virtual_camera_device}" if self.virtual_camera_device else ""),
+                        False,
+                        connected=True,
+                    )
             except (OSError, tk.TclError) as error:
                 self._set_status(f"Не удалось отобразить кадр: {error}", True)
 
@@ -939,9 +910,7 @@ class CameraStudioApp:
             self.stream_server.stop()
         if self.receiver is not None:
             self.receiver.stop()
-        if self.virtual_camera is not None:
-            self.virtual_camera.stop()
-            self.virtual_camera = None
+        self._stop_virtual_camera()
         self.root.destroy()
 
 

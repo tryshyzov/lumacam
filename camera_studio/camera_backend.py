@@ -5,6 +5,8 @@ from typing import Protocol
 
 import numpy as np
 
+from camera_studio import lumalink_camera
+
 OUTPUT_WIDTH = 1280
 OUTPUT_HEIGHT = 720
 OUTPUT_FPS = 30
@@ -36,6 +38,12 @@ class VirtualCameraSession:
 
     def __enter__(self) -> VirtualCameraSession:
         camera_factory = self._camera_factory
+        if camera_factory is None and lumalink_camera.is_registered():
+            # The project's own camera needs no third-party backend.
+            camera = lumalink_camera.LumaLinkCameraDevice()
+            self._camera = camera
+            self.device = camera.device
+            return self
         if camera_factory is None:
             try:
                 import pyvirtualcam
@@ -69,9 +77,8 @@ class VirtualCameraSession:
 
         details = "\n".join(errors)
         raise RuntimeError(
-            "Не найден доступный backend виртуальной камеры. "
-            "Установите OBS Studio с компонентом OBS Virtual Camera "
-            "или отдельно Unity Capture.\n"
+            "Камера LumaLink Camera не установлена. Установите LumaLink Studio "
+            "через установщик либо поставьте OBS Studio или Unity Capture.\n"
             f"{details}"
         )
 

@@ -35,6 +35,17 @@ jobs:
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean LumaLinkStudio.spec
 
+      - uses: microsoft/setup-msbuild@v2
+
+      # LumaLink Camera, the DirectShow virtual camera the installer registers.
+      - name: Build virtual camera
+        shell: pwsh
+        run: |
+          foreach ($platform in 'x64', 'Win32') {
+            msbuild virtualcam\LumaLinkCamera.vcxproj /nologo /v:m /p:Configuration=Release /p:Platform=$platform
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       - name: Build installer
         shell: pwsh
         run: |

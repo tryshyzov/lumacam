@@ -50,7 +50,7 @@ Install Inno Setup 6 and build the desktop executable first. From the project ro
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\LumaLinkStudio.iss
 ```
 
-The setup package is written to `dist\installer`. It installs the desktop application without administrator rights or a LumaLink kernel driver. Virtual camera output requires OBS Studio with OBS Virtual Camera or a separately installed Unity Capture backend. The current desktop and setup executables are unsigned development artifacts, not public release binaries. See [`installer/README.md`](./installer/README.md) for details.
+The setup package is written to `dist\installer`. Build the virtual camera first (see [`virtualcam/README.md`](./virtualcam/README.md)); the installer bundles and registers it. It asks for administrator rights once, because a camera that every application can see is registered machine-wide. It installs no kernel driver. The current desktop and setup executables are unsigned development artifacts, not public release binaries. See [`installer/README.md`](./installer/README.md) for details.
 
 ## Connect the Android camera
 
@@ -80,9 +80,9 @@ The desktop preview and live Android camera stream use length-prefixed H.264 acc
 
 ### Windows virtual camera
 
-LumaLink does **not** install or use its former custom AVStream kernel driver. On Windows 10 and 11, the desktop app tries the separately installed **OBS Virtual Camera** first and **Unity Video Capture** second. If neither backend is installed and working, the app displays an error that names the required backends. Install OBS Studio (including its Virtual Camera component) or Unity Capture before starting virtual output. The LumaLink installer never enables test-signing or changes Secure Boot.
+LumaLink Studio ships its own virtual camera, **LumaLink Camera**. It is a user-mode DirectShow filter (source in [`virtualcam/`](./virtualcam/)), not a kernel driver, so it needs no driver signing, test-signing or Secure Boot changes. The installer registers it; after that it appears in the camera list of Zoom, Discord, Telegram, browsers and OBS on Windows 10 and 11, and nothing else has to be installed.
 
-This dependency-based design avoids distributing a LumaLink kernel driver. It still relies on the third-party backend being properly installed and registered with Windows. Compatibility must be checked in the actual target application; some clients only enumerate cameras when they start.
+While no video is being sent, the camera shows an idle image, a camera glyph on gray: LumaLink Studio sends it when it runs without a phone, and the filter draws the same image by itself when LumaLink Studio is closed. Compatibility must still be checked in the actual target application; some clients only enumerate cameras when they start.
 
 Zero latency is not possible: camera exposure, encoding, transport, decoding, and desktop display each add delay.
 
@@ -96,17 +96,17 @@ Planned iOS companion (Swift / AVFoundation) ───────────�
                                               Windows desktop app (Python prototype)
                                                 ├─ preview and settings UI
                                                 ├─ USB / Wi-Fi transport adapters
-                                                └─ OBS Virtual Camera / Unity Capture
+                                                └─ LumaLink Camera (DirectShow)
                                                      │
                          Discord · Telegram · OBS · Zoom · Google Meet
 ```
 
-OBS Virtual Camera or Unity Capture must be installed separately; LumaLink does not install camera drivers.
+LumaLink Camera is installed by the LumaLink Studio installer; no kernel driver is involved.
 
 ### Desktop (Windows first)
 
 - The current prototype keeps the desktop UI, connection, decoding, and frame delivery in one Python application; a separate native session service is future work.
-- Send frames through the `pyvirtualcam` OBS backend, falling back to Unity Capture. Never fall back to a physical camera.
+- Send frames to LumaLink Camera. When it is not installed (running from source or from the standalone executable), fall back to the `pyvirtualcam` OBS backend and then Unity Capture. Never fall back to a physical camera.
 - LumaLink does not install, register, update, or remove third-party camera devices.
 
 ### Mobile companions
@@ -118,13 +118,13 @@ OBS Virtual Camera or Unity Capture must be installed separately; LumaLink does 
 ### Transport
 
 - The current prototype sends H.264 video without authentication or encryption over the local network for Wi-Fi. For USB, the desktop discovers the phone on the USB-tethering network and connects to its TCP listener; both transports use length-prefixed H.264 access units, per-frame acknowledgements, and a control channel. The phone accepts USB-mode clients only from the subnet of its tethering interface (`rndis*`, `usb*`, `ncm*`) or from loopback (the `adb forward` fallback), but that link is still unauthenticated and unencrypted.
-- OBS Virtual Camera and Unity Capture are third-party Windows camera backends and must be installed separately. LumaLink uses OBS first and Unity as fallback on both Windows 10 and Windows 11.
+- LumaLink Camera is a DirectShow filter derived from Unity Capture. OBS Virtual Camera and Unity Capture are only fallbacks for running without the installer.
 - A production transport can use an authenticated WebRTC session for video and control messages. Keep transport selection separate from encoding and the camera-control protocol.
 - Validate latency, reconnect behavior, and network permissions independently on Android and iOS. Do not assume USB camera mode or USB tethering is available on every phone/OS combination.
 
 ### Compatibility and limitations
 
-- A virtual camera depends on a camera backend installed in Windows; preview alone does not register a system-wide camera device.
+- The virtual camera exists only after the installer has registered it; preview alone does not register a system-wide camera device. Microsoft Store applications and the Windows Camera app do not list DirectShow cameras.
 - Camera controls and available lenses depend on the phone, selected lens, camera format, and OS APIs. In particular, an app must not promise manual ISO, focus, or white balance when the device does not expose them.
 - Compatibility should be verified against each target application and Windows version; some video clients enumerate cameras only at startup.
 
@@ -132,7 +132,7 @@ OBS Virtual Camera or Unity Capture must be installed separately; LumaLink does 
 
 1. Windows desktop shell, shared session/control models, and capability-aware UI.
 2. Android companion with hardware H.264 encoding and freshness-bounded USB/Wi-Fi framing over USB tethering or the local network.
-3. Windows virtual-camera output through separately installed OBS Virtual Camera or Unity Capture.
+3. Windows virtual-camera output through the bundled LumaLink Camera.
 4. USB transport polish and Wi-Fi latency/reconnect validation.
 5. iOS companion, capability mapping, and USB/Wi-Fi interoperability.
 6. Installer/signing, compatibility testing, and end-to-end device matrix.
