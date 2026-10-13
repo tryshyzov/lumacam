@@ -23,6 +23,9 @@ UninstallDisplayIcon={app}\LumaLinkStudio.exe
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 PrivilegesRequired=admin
+; Applications that have used the camera keep its DLL loaded. Never close
+; them: a newer DLL is put in place on the next restart instead.
+CloseApplications=no
 RestartIfNeededByRun=yes
 OutputDir=..\dist\installer
 OutputBaseFilename=LumaLinkStudio-Setup-{#AppVersion}
@@ -42,12 +45,12 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; \
 [Files]
 Source: "{#AppExe}"; DestDir: "{app}"; DestName: "LumaLinkStudio.exe"; \
     Flags: ignoreversion
-; LumaLink Camera, the virtual camera other applications see. An application
-; that has it open keeps the DLL loaded, hence restartreplace.
+; LumaLink Camera, the virtual camera other applications see. It is replaced
+; only by a newer build (comparetimestamp), and on restart if it is in use.
 Source: "{#CameraBuild}\Release-LumaLinkCamera64\LumaLinkCamera64.dll"; DestDir: "{app}"; \
-    Flags: ignoreversion regserver 64bit restartreplace uninsrestartdelete
+    Flags: comparetimestamp regserver 64bit restartreplace uninsrestartdelete
 Source: "{#CameraBuild}\Release-LumaLinkCamera32\LumaLinkCamera32.dll"; DestDir: "{app}"; \
-    Flags: ignoreversion regserver 32bit restartreplace uninsrestartdelete
+    Flags: comparetimestamp regserver 32bit restartreplace uninsrestartdelete
 Source: "..\virtualcam\LICENSE.txt"; DestDir: "{app}"; DestName: "LumaLinkCamera-LICENSE.txt"; \
     Flags: ignoreversion
 [Icons]

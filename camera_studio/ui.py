@@ -1,15 +1,35 @@
+"""The LumaLink Studio window."""
+
+from __future__ import annotations
+
 import ipaddress
 import queue
 import socket
+import sys
 import time
-import tkinter as tk
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
-from tkinter import ttk
 
-from PIL import Image, ImageTk
+from PIL import Image
+from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from camera_studio.models import ConnectionMode, DeviceSession, SessionStatus
+from camera_studio import __version__
+from camera_studio.i18n import LANGUAGE_NAMES, LANGUAGES, format_number, translate
+from camera_studio.pause_frame import paused_frame
 from camera_studio.stream import (
     CameraStreamServer,
     H264Decoder,
@@ -18,698 +38,794 @@ from camera_studio.stream import (
     local_network_blocked,
 )
 from camera_studio.virtual_camera import VirtualCameraOutput
-
+from camera_studio.widgets import (
+    ICON_CLOSE,
+    ICON_GEAR,
+    ICON_MAXIMIZE,
+    ICON_MINIMIZE,
+    ICON_PAUSE,
+    ICON_PLAY,
+    ICON_RESTORE,
+    ICON_STATUS_ERROR,
+    ICON_STATUS_OFF,
+    ICON_STATUS_ON,
+    ICON_STATUS_WAIT,
+    STYLE_SHEET,
+    Preview,
+    ProfileButton,
+    Segmented,
+    Select,
+    Slider,
+    Switch,
+    svg_icon,
+    svg_pixmap,
+)
 
 STREAM_PORT = 8765
-HINT_COLOR = "#747d8a"
+PANEL_WIDTH = 360
+TITLE_BAR_HEIGHT = 40
+RESIZE_MARGIN = 5
+
+# Resolution, frame rate, and the frame size shown in the menu.
+PROFILES = (
+    ("480p", 30, "640×480"),
+    ("720p", 30, "1280×720"),
+    ("720p", 60, "1280×720"),
+    ("1080p", 30, "1920×1080"),
+    ("1080p", 60, "1920×1080"),
+)
+DEFAULT_PROFILE = 1
+ISO_VALUES = ["auto", "100", "200", "400", "800", "1600"]
+
+# The phone app matches these exact words, whatever the interface language.
+PHONE_AUTO = "Авто"
+PHONE_WHITE_BALANCE = (
+    ("auto", "Авто"),
+    ("wb_incandescent", "Лампа"),
+    ("wb_fluorescent", "Люминесцентный"),
+    ("wb_daylight", "Дневной"),
+    ("wb_cloudy", "Облачно"),
+)
+PHONE_LENS = {"rear": "Задняя", "front": "Фронтальная"}
 
 
-COLORS = {
-    "background": "#101216",
-    "panel": "#171a20",
-    "panel_alt": "#1d2129",
-    "border": "#2b303a",
-    "text": "#f1f3f6",
-    "muted": "#969eab",
-    "accent": "#8d7aff",
-    "accent_hover": "#a295ff",
-    "green": "#58d6a0",
-    "warning": "#f0b766",
-}
+class _TitleBar(QWidget):
+    """Drag area of the frameless window; holds the tools and window buttons."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("titlebar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(TITLE_BAR_HEIGHT)
+        self.gap = QWidget(self)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        # The prototype leaves 257 px between the tools and the window buttons
+        # at 1920 px; keep that proportion on narrower windows.
+        self.gap.setFixedWidth(int(max(12, min(257, self.width() * 0.134))))
+        super().resizeEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.window().toggle_maximized()
 
 
-class CameraStudioApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.session = DeviceSession()
-        self.mode = tk.StringVar(value=self.session.mode.value)
+class _ResizeGrip(QWidget):
+    """An invisible strip on a window edge that starts a native resize."""
+
+    def __init__(self, parent: QWidget, edges: Qt.Edge, cursor: Qt.CursorShape) -> None:
+        super().__init__(parent)
+        self._edges = edges
+        self.setCursor(cursor)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            handle = self.window().windowHandle()
+            if handle is not None:
+                handle.startSystemResize(self._edges)
+
+
+class _SettingsPopup(QFrame):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.Popup
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.card = QFrame(self)
+        self.card.setObjectName("settingsCard")
+        self.card.setFixedWidth(320)
+        outer.addWidget(self.card)
+        self.content = QVBoxLayout(self.card)
+        self.content.setContentsMargins(20, 20, 20, 20)
+        self.content.setSpacing(24)
+
+
+class MainWindow(QWidget):
+    def __init__(self, settings: QSettings | None = None) -> None:
+        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("root")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.settings = settings or QSettings("LumaLink", "LumaLink Studio")
+        language = str(self.settings.value("language", "ru"))
+        self.language = language if language in LANGUAGES else "ru"
+
         self.frames: queue.Queue[Image.Image] = queue.Queue(maxsize=1)
         self.status_messages: queue.Queue[tuple[str, bool]] = queue.Queue()
+        self.virtual_camera_status_messages: queue.Queue[tuple[int, str, bool]] = queue.Queue()
         self.stream_server: CameraStreamServer | None = None
         self.receiver: H264FrameReceiver | None = None
         self.virtual_camera: VirtualCameraOutput | None = None
-        self.decoder = H264Decoder()
-        self.preview_image: ImageTk.PhotoImage | None = None
-        logo_path = Path(__file__).resolve().parents[1] / "assets" / "LumaCam.png"
-        self.logo_image = ImageTk.PhotoImage(
-            Image.open(logo_path).resize((32, 32), Image.Resampling.LANCZOS)
-        )
-        self.window_icon_image = ImageTk.PhotoImage(
-            Image.open(logo_path).resize((64, 64), Image.Resampling.LANCZOS)
-        )
-        self.frame_timestamps: deque[float] = deque(maxlen=30)
-        self.virtual_camera_status_messages: queue.Queue[tuple[int, str, bool]] = queue.Queue()
         self.virtual_camera_run = 0
         self.virtual_camera_device = ""
         self.virtual_camera_failed = False
+        self.decoder = H264Decoder()
+        self.frame_timestamps: deque[float] = deque(maxlen=30)
         self.streaming = False
         self.camera_connected = False
-        self.control_after_id: str | None = None
-        self.control_widgets: list[tuple[tk.Widget, str]] = []
-        self.focus_slider: ttk.Scale | None = None
-        self.autofocus_var = tk.BooleanVar(value=True)
-        self.focus_var = tk.DoubleVar(value=0.5)
-        self.exposure_var = tk.DoubleVar(value=0.0)
-        self.iso_var = tk.StringVar(value="Авто")
-        self.white_balance_var = tk.StringVar(value="Авто")
-        self.lens_var = tk.StringVar(value="Задняя")
-        self.zoom_var = tk.DoubleVar(value=1.0)
-        self.fps_var = tk.StringVar(value="30")
-        self.resolution_var = tk.StringVar(value="720p")
+        self.paused = False
+        self.paused_image: Image.Image | None = None
+        self.latest_image: Image.Image | None = None
+        self.frame_size = (0, 0)
+        self.measured_fps = 0.0
+        self.link = "USB"
+        self.error_text = ""
+        self.vpn_blocks_lan = False
+        self.profile_index = DEFAULT_PROFILE
+        self._texts: list[tuple[Callable[[str], None], str, bool]] = []
+        self._ready = False
 
-        root.title("LumaLink Studio")
-        root.iconphoto(True, self.window_icon_image)
-        root.geometry("1240x800")
-        root.minsize(1020, 680)
-        root.configure(background=COLORS["background"])
+        self.setWindowTitle("LumaLink Studio")
+        logo = Path(__file__).resolve().parents[1] / "assets" / "LumaCam.png"
+        if logo.is_file():
+            self.setWindowIcon(QIcon(str(logo)))
+        self.setMinimumSize(980, 620)
+        self.resize(1280, 760)
 
-        self.style = ttk.Style(root)
-        self.style.theme_use("clam")
-        self._configure_styles()
-        self._build_layout()
-        self.root.protocol("WM_DELETE_WINDOW", self._close)
-        self.root.after(16, self._poll_stream)
+        self.icons = {
+            "pause": svg_icon(ICON_PAUSE),
+            "play": svg_icon(ICON_PLAY),
+            "maximize": svg_icon(ICON_MAXIMIZE),
+            "restore": svg_icon(ICON_RESTORE),
+        }
+        self.status_pixmaps = {
+            "on": svg_pixmap(ICON_STATUS_ON, stroke=1.25),
+            "wait": svg_pixmap(ICON_STATUS_WAIT, stroke=1.25),
+            "off": svg_pixmap(ICON_STATUS_OFF, stroke=1.25),
+            "error": svg_pixmap(ICON_STATUS_ERROR, stroke=1.25),
+        }
 
-    def _configure_styles(self) -> None:
-        self.style.configure(
-            "TCombobox",
-            fieldbackground=COLORS["panel_alt"],
-            background=COLORS["panel_alt"],
-            foreground=COLORS["text"],
-            arrowcolor=COLORS["muted"],
-            bordercolor=COLORS["border"],
-            lightcolor=COLORS["border"],
-            darkcolor=COLORS["border"],
-            padding=8,
-        )
-        self.style.map(
-            "TCombobox",
-            fieldbackground=[("disabled", COLORS["panel"])],
-            foreground=[("disabled", COLORS["muted"])],
-        )
-        self.style.configure(
-            "TScale",
-            background=COLORS["panel"],
-            troughcolor=COLORS["panel_alt"],
-            sliderthickness=12,
-        )
-        self.style.configure(
-            "TCheckbutton",
-            background=COLORS["panel"],
-            foreground=COLORS["muted"],
-        )
-        self.style.map(
-            "TCheckbutton",
-            background=[("active", COLORS["panel"])],
-            foreground=[("disabled", COLORS["muted"])],
-        )
+        self.control_timer = QTimer(self)
+        self.control_timer.setSingleShot(True)
+        self.control_timer.setInterval(120)
+        self.control_timer.timeout.connect(self._send_camera_control)
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(16)
+        self.poll_timer.timeout.connect(self._poll_stream)
 
-    def _build_layout(self) -> None:
-        self.root.grid_columnconfigure(0, weight=1)
-        self.root.grid_rowconfigure(1, weight=1)
-        self._build_topbar()
+        self._build()
+        self._load_settings()
+        self._ready = True
+        self.retranslate()
+        self.setFocus()
+        self.poll_timer.start()
 
-        body = tk.Frame(self.root, background=COLORS["background"])
-        body.grid(row=1, column=0, sticky="nsew", padx=28, pady=(18, 24))
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=0)
-        body.grid_rowconfigure(1, weight=1)
+    # ------------------------------------------------------------------ layout
 
-        self._build_heading(body)
-        self._build_preview(body)
-        self._build_controls(body)
+    def t(self, key: str, **values: object) -> str:
+        return translate(self.language, key, **values)
 
-    def _build_topbar(self) -> None:
-        bar = tk.Frame(
-            self.root,
-            background=COLORS["panel"],
-            height=64,
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
-        )
-        bar.grid(row=0, column=0, sticky="ew")
-        bar.grid_propagate(False)
-        bar.grid_columnconfigure(1, weight=1)
+    def _bind(self, setter: Callable[[str], None], key: str, upper: bool = False) -> None:
+        """Remember a text so that it follows the interface language."""
+        self._texts.append((setter, key, upper))
 
-        brand = tk.Frame(bar, background=COLORS["panel"])
-        brand.grid(row=0, column=0, sticky="w", padx=28)
-        mark = tk.Label(
-            brand,
-            image=self.logo_image,
-            bg=COLORS["panel"],
-        )
-        mark.pack(side="left", padx=(0, 10))
-        tk.Label(
-            brand,
-            text="LumaLink",
-            font=("Segoe UI", 13, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["panel"],
-        ).pack(side="left")
-        tk.Label(
-            brand,
-            text="STUDIO",
-            font=("Segoe UI", 8, "bold"),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).pack(side="left", padx=(7, 0), pady=(4, 0))
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_title_bar())
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._build_panel())
+        self.preview = Preview(self)
+        body.addWidget(self.preview, 1)
+        root.addLayout(body, 1)
+        self._build_settings()
+        self._build_profile_menu()
+        self._build_resize_grips()
 
-        tk.Label(
-            bar,
-            text="ДЕСКТОП · WINDOWS",
-            font=("Segoe UI", 9, "bold"),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=2, padx=28)
+    def _icon_button(self, icon: QIcon, width: int = 28, height: int = 28, icon_size: int = 14) -> QToolButton:
+        button = QToolButton(self)
+        button.setIcon(icon)
+        button.setIconSize(QSize(icon_size, icon_size))
+        button.setFixedSize(width, height)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        return button
 
-    def _build_heading(self, parent: tk.Frame) -> None:
-        heading = tk.Frame(parent, background=COLORS["background"])
-        heading.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
-        heading.grid_columnconfigure(0, weight=1)
+    def _build_title_bar(self) -> QWidget:
+        bar = _TitleBar(self)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(0)
+        layout.addStretch(1)
 
-        tk.Label(
-            heading,
-            text="Камера",
-            font=("Segoe UI", 22, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["background"],
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            heading,
-            text="Подключите телефон и настройте изображение для трансляции.",
-            font=("Segoe UI", 10),
-            fg=COLORS["muted"],
-            bg=COLORS["background"],
-        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.pause_button = self._icon_button(self.icons["pause"])
+        self.pause_button.clicked.connect(self._toggle_pause)
+        layout.addWidget(self.pause_button)
+        self.settings_button = self._icon_button(
+            svg_icon(ICON_GEAR, view=24, size=15, stroke=1.6), icon_size=15
+        )
+        self.settings_button.clicked.connect(self._show_settings)
+        self._bind(self.settings_button.setToolTip, "settings")
+        self._bind(self.settings_button.setAccessibleName, "settings")
+        layout.addWidget(self.settings_button)
+        layout.addSpacing(17)
+        self.profile_button = ProfileButton(self)
+        self.profile_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.profile_button.clicked.connect(self._show_profile_menu)
+        layout.addWidget(self.profile_button)
+        layout.addWidget(bar.gap)
 
-        status = tk.Frame(heading, background=COLORS["panel"], padx=11, pady=7)
-        status.grid(row=0, column=2, rowspan=2, sticky="e")
-        self.status_dot = tk.Canvas(
-            status,
-            width=8,
-            height=8,
-            bg=COLORS["panel"],
-            highlightthickness=0,
-        )
-        self.status_dot.create_oval(1, 1, 7, 7, fill=COLORS["warning"], outline="")
-        self.status_dot.pack(side="left", padx=(0, 7))
-        self.status_label = tk.Label(
-            status,
-            text="Телефон не подключён",
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        )
-        self.status_label.pack(side="left")
+        for name, icon, slot in (
+            ("minimize", svg_icon(ICON_MINIMIZE), self.showMinimized),
+            ("maximize", self.icons["maximize"], self.toggle_maximized),
+            ("close", svg_icon(ICON_CLOSE), self.close),
+        ):
+            button = self._icon_button(icon, width=36, height=TITLE_BAR_HEIGHT)
+            button.setProperty("role", "window")
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.clicked.connect(slot)
+            if name == "maximize":
+                self.maximize_button = button
+            else:
+                self._bind(button.setToolTip, name)
+                self._bind(button.setAccessibleName, name)
+            layout.addWidget(button)
+        return bar
 
-    def _build_preview(self, parent: tk.Frame) -> None:
-        area = tk.Frame(parent, background=COLORS["background"])
-        area.grid(row=1, column=0, sticky="nsew", padx=(0, 20))
-        area.grid_columnconfigure(0, weight=1)
-        area.grid_rowconfigure(0, weight=1)
+    def _group(self, parent_layout: QVBoxLayout, title_key: str) -> QVBoxLayout:
+        holder = QWidget(self)
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        title = QLabel(holder)
+        title.setProperty("role", "groupTitle")
+        self._bind(title.setText, title_key, upper=True)
+        layout.addWidget(title)
+        parent_layout.addWidget(holder)
+        return layout
 
-        preview = tk.Frame(
-            area,
-            background="#0c0e12",
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
-        )
-        self.preview_panel = preview
-        preview.grid(row=0, column=0, sticky="nsew")
+    def _label(self, key: str | None = None, role: str | None = None, wrap: bool = False) -> QLabel:
+        label = QLabel(self)
+        if role:
+            label.setProperty("role", role)
+        label.setWordWrap(wrap)
+        if key:
+            self._bind(label.setText, key)
+        return label
 
-        center = tk.Frame(preview, background="#0c0e12")
-        self.preview_placeholder = center
-        center.place(relx=0.5, rely=0.48, anchor="center")
-        icon = tk.Canvas(
-            center,
-            width=54,
-            height=54,
-            background=COLORS["panel_alt"],
-            highlightthickness=0,
-        )
-        icon.create_rectangle(14, 17, 40, 37, outline=COLORS["muted"], width=2)
-        icon.create_polygon(40, 22, 48, 18, 48, 36, 40, 32, outline=COLORS["muted"], fill="")
-        icon.pack(pady=(0, 17))
-        tk.Label(
-            center,
-            text="Предпросмотр появится после подключения",
-            font=("Segoe UI", 13, "bold"),
-            fg=COLORS["text"],
-            bg="#0c0e12",
-        ).pack()
-        tk.Label(
-            center,
-            text="Сначала установите приложение-компаньон на телефон.",
-            font=("Segoe UI", 10),
-            fg=COLORS["muted"],
-            bg="#0c0e12",
-        ).pack(pady=(7, 0))
-        self.preview_label = tk.Label(preview, background="#0c0e12")
-        self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
+    def _switch_row(self, layout: QVBoxLayout, key: str) -> Switch:
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        label = self._label(key, wrap=True)
+        switch = Switch(self)
+        self._bind(switch.setAccessibleName, key)
+        row.addWidget(label, 1)
+        row.addWidget(switch, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(row)
+        return switch
 
-        preview_footer = tk.Frame(preview, background="#0c0e12")
-        preview_footer.place(relx=0.03, rely=0.95, anchor="sw")
-        self.preview_signal_label = tk.Label(
-            preview_footer,
-            text="НЕТ ВХОДЯЩЕГО СИГНАЛА",
-            font=("Segoe UI", 8, "bold"),
-            fg=COLORS["muted"],
-            bg="#0c0e12",
-        )
-        self.preview_signal_label.pack(side="left")
-        self.preview_resolution_label = tk.Label(
-            preview_footer,
-            text="  ·  ожидание потока",
-            font=("Segoe UI", 8),
-            fg="#68707d",
-            bg="#0c0e12",
-        )
-        self.preview_resolution_label.pack(side="left")
-
-        self._build_connection_card(area)
-
-    def _build_connection_card(self, parent: tk.Frame) -> None:
-        card = self._card(parent)
-        card.grid(row=1, column=0, sticky="ew", pady=(14, 0))
-        card.grid_columnconfigure(0, weight=1)
-
-        tk.Label(
-            card,
-            text="Подключение",
-            font=("Segoe UI", 11, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=0, sticky="w")
-        tk.Label(
-            card,
-            text="Выберите способ связи с телефоном",
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
-
-        mode_row = tk.Frame(card, background=COLORS["panel"])
-        mode_row.grid(row=2, column=0, sticky="ew")
-        for value in (ConnectionMode.WIFI.value, ConnectionMode.USB.value):
-            button = tk.Radiobutton(
-                mode_row,
-                text=value,
-                value=value,
-                variable=self.mode,
-                command=self._select_mode,
-                indicatoron=False,
-                font=("Segoe UI", 9, "bold"),
-                fg=COLORS["muted"],
-                selectcolor=COLORS["panel_alt"],
-                activebackground=COLORS["panel_alt"],
-                activeforeground=COLORS["text"],
-                background=COLORS["panel"],
-                padx=15,
-                pady=8,
-                relief="flat",
-                borderwidth=0,
-            )
-            button.pack(side="left", padx=(0, 8))
-
-        self.connect_button = tk.Button(
-            card,
-            text="Подключить камеру",
-            command=self._toggle_connection,
-            font=("Segoe UI", 9, "bold"),
-            fg="white",
-            bg=COLORS["accent"],
-            activebackground=COLORS["accent_hover"],
-            activeforeground="white",
-            relief="flat",
-            cursor="hand2",
-            padx=12,
-            pady=9,
-        )
-        self.connect_button.grid(row=3, column=0, sticky="ew", pady=(14, 0))
-
-        connection_fields = tk.Frame(card, background=COLORS["panel"])
-        connection_fields.grid(row=4, column=0, sticky="ew", pady=(12, 0))
-        connection_fields.grid_columnconfigure(1, weight=1)
-        tk.Label(
-            connection_fields,
-            text="IP компьютера",
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self.host_entry = tk.Entry(
-            connection_fields,
-            textvariable=tk.StringVar(value=self._local_ipv4_addresses()[0]),
-            font=("Segoe UI", 9),
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            bg=COLORS["panel_alt"],
-            relief="flat",
-            width=18,
-        )
-        self.host_entry.grid(row=0, column=1, sticky="ew", pady=3)
-        self.connection_hint = tk.Label(
-            card,
-            text="Wi-Fi без кода доступа: любой участник этой сети сможет видеть камеру. Используйте только доверенную сеть.",
-            wraplength=395,
-            justify="left",
-            font=("Segoe UI", 8),
-            fg="#747d8a",
-            bg=COLORS["panel"],
-        )
-        self.connection_hint.grid(row=5, column=0, sticky="w", pady=(8, 0))
-
-    def _build_controls(self, parent: tk.Frame) -> None:
-        card = self._card(parent)
-        card.grid(row=1, column=1, sticky="ns")
-        card.configure(width=300)
-        card.grid_propagate(False)
-        card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(0, weight=1)
-        controls_canvas = tk.Canvas(
-            card,
-            background=COLORS["panel"],
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        controls_canvas.grid(row=0, column=0, sticky="nsew")
-        controls_scrollbar = ttk.Scrollbar(
-            card,
-            orient="vertical",
-            command=controls_canvas.yview,
-        )
-        controls_scrollbar.grid(row=0, column=1, sticky="ns")
-        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
-        controls_content = tk.Frame(controls_canvas, background=COLORS["panel"])
-        controls_window = controls_canvas.create_window(
-            (0, 0),
-            window=controls_content,
-            anchor="nw",
-        )
-        controls_content.bind(
-            "<Configure>",
-            lambda _event: controls_canvas.configure(
-                scrollregion=controls_canvas.bbox("all")
-            ),
-        )
-        controls_canvas.bind(
-            "<Configure>",
-            lambda event: controls_canvas.itemconfigure(
-                controls_window,
-                width=event.width,
-            ),
-        )
-
-        tk.Label(
-            controls_content,
-            text="Настройки камеры",
-            font=("Segoe UI", 12, "bold"),
-            fg=COLORS["text"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=0, sticky="w")
-        self.control_status_label = tk.Label(
-            controls_content,
-            text="Подключите камеру, чтобы управлять параметрами",
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        )
-        self.control_status_label.grid(row=1, column=0, sticky="w", pady=(4, 17))
-
-        self._section_label(controls_content, "ФОКУС", 2)
-        autofocus = ttk.Checkbutton(
-            controls_content,
-            text="Автофокус",
-            variable=self.autofocus_var,
-            command=self._schedule_camera_control_update,
-        )
-        autofocus.grid(row=3, column=0, sticky="w", pady=(0, 5))
-        self.control_widgets.append((autofocus, "normal"))
-        self.focus_slider = self._slider(
-            controls_content, "Ручной фокус", "ДАЛЬШЕ", "БЛИЖЕ", 4,
-            self.focus_var, 0, 1,
-        )
-
-        self._section_label(controls_content, "ИЗОБРАЖЕНИЕ", 5)
-        self._slider(
-            controls_content, "Экспозиция", "−2 EV", "+2 EV", 6,
-            self.exposure_var, -2, 2,
-        )
-        self._select(
-            controls_content, "ISO", ("Авто", "100", "200", "400", "800", "1600"),
-            7, self.iso_var,
-        )
-        self._select(
-            controls_content,
-            "Баланс белого",
-            ("Авто", "Лампа", "Люминесцентный", "Дневной", "Облачно"),
-            8,
-            self.white_balance_var,
-        )
-
-        self._section_label(controls_content, "ОПТИКА И ВЫХОД", 9)
-        self._select(
-            controls_content, "Камера", ("Задняя", "Фронтальная"), 10, self.lens_var,
-        )
-        self._slider(
-            controls_content, "Зум", "1×", "10×", 11, self.zoom_var, 1, 10,
-        )
-        self._select(
-            controls_content, "Частота кадров", ("15", "24", "30", "60"), 12,
-            self.fps_var,
-        )
-        self._select(
-            controls_content, "Разрешение потока", ("480p", "720p", "1080p"), 13,
-            self.resolution_var,
-        )
-        tk.Label(
-            controls_content,
-            text="Доступные ISO, фокус и FPS зависят от камеры телефона.",
-            wraplength=260,
-            justify="left",
-            font=("Segoe UI", 8),
-            fg="#747d8a",
-            bg=COLORS["panel"],
-        ).grid(row=14, column=0, sticky="w", pady=(8, 0))
-        self._set_camera_controls_enabled(False)
-
-    def _card(self, parent: tk.Widget) -> tk.Frame:
-        return tk.Frame(
-            parent,
-            background=COLORS["panel"],
-            padx=18,
-            pady=18,
-            highlightthickness=1,
-            highlightbackground=COLORS["border"],
-        )
-
-    def _section_label(self, parent: tk.Frame, text: str, row: int) -> None:
-        tk.Label(
-            parent,
-            text=text,
-            font=("Segoe UI", 8, "bold"),
-            fg=COLORS["accent"],
-            bg=COLORS["panel"],
-        ).grid(row=row, column=0, sticky="w", pady=(13, 6))
-
-    def _slider(
+    def _slider_field(
         self,
-        parent: tk.Frame,
-        title: str,
-        low_label: str,
-        high_label: str,
-        row: int,
-        variable: tk.DoubleVar,
-        minimum: float,
-        maximum: float,
-    ) -> ttk.Scale:
-        block = tk.Frame(parent, background=COLORS["panel"])
-        block.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-        block.grid_columnconfigure(0, weight=1)
-        tk.Label(
-            block,
-            text=title,
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=0, sticky="w")
-        scale = ttk.Scale(
-            block,
-            from_=minimum,
-            to=maximum,
-            variable=variable,
-            command=lambda _value: self._schedule_camera_control_update(),
-        )
-        scale.grid(row=1, column=0, sticky="ew", pady=(3, 0))
-        self.control_widgets.append((scale, "normal"))
-        ticks = tk.Frame(block, background=COLORS["panel"])
-        ticks.grid(row=2, column=0, sticky="ew")
-        ticks.grid_columnconfigure(0, weight=1)
-        for column, label in enumerate((low_label, high_label)):
-            tk.Label(
-                ticks,
-                text=label,
-                font=("Segoe UI", 8),
-                fg="#747d8a",
-                bg=COLORS["panel"],
-            ).grid(row=0, column=column, sticky="w" if column == 0 else "e")
-        return scale
+        layout: QVBoxLayout,
+        key: str,
+        slider: Slider,
+        low: str | None = None,
+        high: str | None = None,
+        low_key: str | None = None,
+        high_key: str | None = None,
+    ) -> tuple[QWidget, QLabel]:
+        holder = QWidget(self)
+        field = QVBoxLayout(holder)
+        field.setContentsMargins(0, 0, 0, 0)
+        field.setSpacing(4)
+        head = QHBoxLayout()
+        head.addWidget(self._label(key), 1)
+        value = self._label(role="value")
+        head.addWidget(value)
+        field.addLayout(head)
+        self._bind(slider.setAccessibleName, key)
+        field.addWidget(slider)
+        scale = QHBoxLayout()
+        low_label = self._label(low_key, role="secondary")
+        high_label = self._label(high_key, role="secondary")
+        if low is not None:
+            low_label.setText(low)
+        if high is not None:
+            high_label.setText(high)
+        scale.addWidget(low_label)
+        scale.addStretch(1)
+        scale.addWidget(high_label)
+        field.addLayout(scale)
+        layout.addWidget(holder)
+        return holder, value
 
-    def _select(
-        self,
-        parent: tk.Frame,
-        title: str,
-        options: tuple[str, ...],
-        row: int,
-        variable: tk.StringVar,
-    ) -> None:
-        block = tk.Frame(parent, background=COLORS["panel"])
-        block.grid(row=row, column=0, sticky="ew", pady=(0, 7))
-        block.grid_columnconfigure(0, weight=1)
-        tk.Label(
-            block,
-            text=title,
-            font=("Segoe UI", 9),
-            fg=COLORS["muted"],
-            bg=COLORS["panel"],
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        selector = ttk.Combobox(
-            block,
-            values=options,
-            state="readonly",
-            textvariable=variable,
-        )
-        selector.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._schedule_camera_control_update(),
-        )
-        selector.grid(row=1, column=0, sticky="ew")
-        self.control_widgets.append((selector, "readonly"))
+    def _labeled(self, layout: QVBoxLayout, key: str, widget: QWidget) -> None:
+        field = QVBoxLayout()
+        field.setSpacing(4)
+        field.addWidget(self._label(key))
+        field.addWidget(widget)
+        layout.addLayout(field)
 
-    def _set_camera_controls_enabled(self, enabled: bool) -> None:
-        for widget, active_state in self.control_widgets:
-            widget.configure(state=active_state if enabled else "disabled")
-        if self.focus_slider is not None:
-            self.focus_slider.configure(
-                state="normal" if enabled and not self.autofocus_var.get() else "disabled"
+    def _build_panel(self) -> QWidget:
+        panel = QWidget(self)
+        panel.setObjectName("panel")
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setFixedWidth(PANEL_WIDTH)
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget(scroll)
+        content.setObjectName("panelContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        groups = QVBoxLayout(content)
+        groups.setContentsMargins(24, 12, 24, 24)
+        groups.setSpacing(28)
+
+        connection = self._group(groups, "connection")
+        self.mode_seg = Segmented(["USB", "Wi-Fi"], self)
+        self.mode_seg.changed.connect(self._select_mode)
+        connection.addWidget(self.mode_seg)
+        self.connect_button = QPushButton(self)
+        self.connect_button.setObjectName("action")
+        self.connect_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.connect_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.connect_button.clicked.connect(self._toggle_connection)
+        connection.addWidget(self.connect_button)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self.status_icon = QLabel(self)
+        self.status_icon.setFixedSize(14, 18)
+        self.status_label = self._label(wrap=True)
+        status_row.addWidget(self.status_icon, 0, Qt.AlignmentFlag.AlignTop)
+        status_row.addWidget(self.status_label, 1)
+        connection.addLayout(status_row)
+        self.hint_label = self._label(role="secondary", wrap=True)
+        connection.addWidget(self.hint_label)
+
+        self.controls = QWidget(content)
+        controls = QVBoxLayout(self.controls)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(28)
+
+        focus = self._group(controls, "focus")
+        self.autofocus_switch = self._switch_row(focus, "autofocus")
+        self.autofocus_switch.setChecked(True)
+        self.autofocus_switch.toggled.connect(self._camera_control_changed)
+        self.focus_slider = Slider(0, 100, 50, self)
+        self.focus_slider.valueChanged.connect(self._camera_control_changed)
+        self.focus_field, self.focus_value = self._slider_field(
+            focus, "manual_focus", self.focus_slider, low_key="far", high_key="near"
+        )
+
+        image = self._group(controls, "image")
+        self.exposure_slider = Slider(-20, 20, 0, self)
+        self.exposure_slider.valueChanged.connect(self._camera_control_changed)
+        _, self.exposure_value = self._slider_field(
+            image, "exposure", self.exposure_slider, low="−2", high="+2"
+        )
+        self.iso_seg = Segmented(ISO_VALUES, self)
+        self.iso_seg.changed.connect(self._camera_control_changed)
+        self._labeled(image, "iso", self.iso_seg)
+        self.white_balance_select = Select(self)
+        for _ in PHONE_WHITE_BALANCE:
+            self.white_balance_select.addItem("")
+        self.white_balance_select.currentIndexChanged.connect(self._camera_control_changed)
+        self._bind(self.white_balance_select.setAccessibleName, "white_balance")
+        self._labeled(image, "white_balance", self.white_balance_select)
+
+        lens = self._group(controls, "lens")
+        self.lens_seg = Segmented(["rear", "front"], self)
+        self.lens_seg.changed.connect(self._camera_control_changed)
+        lens.addWidget(self.lens_seg)
+        self.zoom_slider = Slider(10, 100, 10, self)
+        self.zoom_slider.valueChanged.connect(self._camera_control_changed)
+        _, self.zoom_value = self._slider_field(
+            lens, "zoom", self.zoom_slider, low="1×", high="10×"
+        )
+
+        self.reset_button = QPushButton(self)
+        self.reset_button.setObjectName("textButton")
+        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.reset_button.clicked.connect(self._reset_camera_controls)
+        self._bind(self.reset_button.setText, "reset")
+        controls.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignLeft)
+        groups.addWidget(self.controls)
+        groups.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
+
+        foot = QWidget(panel)
+        foot.setObjectName("panelFoot")
+        foot.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        foot_layout = QVBoxLayout(foot)
+        foot_layout.setContentsMargins(24, 16, 24, 20)
+        foot_layout.setSpacing(2)
+        foot_layout.addWidget(self._label("vcam", role="strong"))
+        self.virtual_camera_note = self._label(role="secondary", wrap=True)
+        foot_layout.addWidget(self.virtual_camera_note)
+        outer.addWidget(foot)
+        return panel
+
+    def _build_settings(self) -> None:
+        self.settings_popup = _SettingsPopup(self)
+        layout = self.settings_popup.content
+        layout.addWidget(self._label("settings", role="heading"))
+
+        language = self._group(layout, "language")
+        self.language_seg = Segmented(list(LANGUAGES), self)
+        self.language_seg.set_labels(LANGUAGE_NAMES)
+        self.language_seg.changed.connect(self._select_language)
+        language.addWidget(self.language_seg)
+
+        preview = self._group(layout, "preview")
+        self.grid_switch = self._switch_row(preview, "opt_grid")
+        self.info_switch = self._switch_row(preview, "opt_info")
+        self.mirror_switch = self._switch_row(preview, "opt_mirror")
+
+        connection = self._group(layout, "connection")
+        self.host_select = Select(self)
+        self.host_select.addItems(self._local_ipv4_addresses())
+        self._bind(self.host_select.setAccessibleName, "opt_host")
+        self._labeled(connection, "opt_host", self.host_select)
+        self.adb_switch = self._switch_row(connection, "opt_adb")
+
+        about = self._label(role="secondary")
+        about.setText(f"LumaLink Studio {__version__}")
+        layout.addWidget(about)
+
+    def _connect_settings(self) -> None:
+        for switch, name in (
+            (self.grid_switch, "grid"),
+            (self.info_switch, "info"),
+            (self.mirror_switch, "mirror"),
+            (self.adb_switch, "adb_fallback"),
+        ):
+            switch.toggled.connect(lambda checked, key=name: self._save_option(key, checked))
+        self.host_select.currentTextChanged.connect(lambda host: self._save_option("host", host))
+
+    def _build_profile_menu(self) -> None:
+        self.profile_menu = QMenu(self)
+        self.profile_menu.setWindowFlags(
+            self.profile_menu.windowFlags()
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.profile_menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.profile_actions: list[QAction] = []
+        group = QActionGroup(self.profile_menu)
+        group.setExclusive(True)
+        self._check_icon = svg_icon('<path d="M2.5 7.3 5.6 10.4 11.5 3.8"/>', stroke=1.5)
+        blank = QPixmap(56, 56)
+        blank.fill(Qt.GlobalColor.transparent)
+        self._blank_icon = QIcon(blank)
+        for index in range(len(PROFILES)):
+            action = QAction(self.profile_menu)
+            action.triggered.connect(lambda _checked=False, chosen=index: self._select_profile(chosen))
+            group.addAction(action)
+            self.profile_menu.addAction(action)
+            self.profile_actions.append(action)
+
+    def _build_resize_grips(self) -> None:
+        edge, shape = Qt.Edge, Qt.CursorShape
+        self.grips = [
+            (_ResizeGrip(self, edge.LeftEdge, shape.SizeHorCursor), "left"),
+            (_ResizeGrip(self, edge.RightEdge, shape.SizeHorCursor), "right"),
+            (_ResizeGrip(self, edge.TopEdge, shape.SizeVerCursor), "top"),
+            (_ResizeGrip(self, edge.BottomEdge, shape.SizeVerCursor), "bottom"),
+            (_ResizeGrip(self, edge.TopEdge | edge.LeftEdge, shape.SizeFDiagCursor), "top-left"),
+            (_ResizeGrip(self, edge.BottomEdge | edge.RightEdge, shape.SizeFDiagCursor), "bottom-right"),
+            (_ResizeGrip(self, edge.TopEdge | edge.RightEdge, shape.SizeBDiagCursor), "top-right"),
+            (_ResizeGrip(self, edge.BottomEdge | edge.LeftEdge, shape.SizeBDiagCursor), "bottom-left"),
+        ]
+
+    def _place_resize_grips(self) -> None:
+        margin, corner = RESIZE_MARGIN, 2 * RESIZE_MARGIN
+        width, height = self.width(), self.height()
+        places = {
+            "left": (0, corner, margin, height - 2 * corner),
+            "right": (width - margin, corner, margin, height - 2 * corner),
+            "top": (corner, 0, width - 2 * corner, margin),
+            "bottom": (corner, height - margin, width - 2 * corner, margin),
+            "top-left": (0, 0, corner, corner),
+            "bottom-right": (width - corner, height - corner, corner, corner),
+            "top-right": (width - corner, 0, corner, corner),
+            "bottom-left": (0, height - corner, corner, corner),
+        }
+        resizable = not self.isMaximized()
+        for grip, name in self.grips:
+            grip.setGeometry(*places[name])
+            grip.setVisible(resizable)
+            grip.raise_()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._ready:
+            self._place_resize_grips()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if self._ready and event.type() == event.Type.WindowStateChange:
+            self._place_resize_grips()
+            self._refresh_window_buttons()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._place_resize_grips()
+
+    def toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    # ------------------------------------------------------------ settings/i18n
+
+    def _load_settings(self) -> None:
+        self.language_seg.set_value(self.language)
+        self.grid_switch.setChecked(self.settings.value("grid", True, type=bool))
+        self.info_switch.setChecked(self.settings.value("info", False, type=bool))
+        self.mirror_switch.setChecked(self.settings.value("mirror", False, type=bool))
+        self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
+        host = str(self.settings.value("host", ""))
+        if self.host_select.findText(host) >= 0:
+            self.host_select.setCurrentText(host)
+        self._connect_settings()
+
+    def _save_option(self, key: str, value: object) -> None:
+        self.settings.setValue(key, value)
+        self._refresh()
+
+    def _select_language(self, language: str) -> None:
+        self.language = language
+        self.settings.setValue("language", language)
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        for setter, key, upper in self._texts:
+            text = self.t(key)
+            setter(text.upper() if upper else text)
+        self.iso_seg.set_labels(
+            {value: self.t("auto") if value == "auto" else value for value in ISO_VALUES}
+        )
+        self.lens_seg.set_labels({"rear": self.t("rear"), "front": self.t("front")})
+        for index, (key, _token) in enumerate(PHONE_WHITE_BALANCE):
+            self.white_balance_select.setItemText(index, self.t(key))
+        for index, (resolution, fps, size) in enumerate(PROFILES):
+            self.profile_actions[index].setText(
+                f"{resolution}, {fps} {self.t('fps_unit')}\t{size}"
             )
-        self.control_status_label.configure(
-            text=(
-                "Управление камерой подключено"
-                if enabled
-                else "Подключите камеру, чтобы управлять параметрами"
-            ),
-            fg=COLORS["green"] if enabled else COLORS["muted"],
+        self._refresh()
+
+    # -------------------------------------------------------------- UI state
+
+    def _refresh_window_buttons(self) -> None:
+        maximized = self.isMaximized()
+        self.maximize_button.setIcon(self.icons["restore" if maximized else "maximize"])
+        name = self.t("restore" if maximized else "maximize")
+        self.maximize_button.setToolTip(name)
+        self.maximize_button.setAccessibleName(name)
+
+    def _refresh(self) -> None:
+        """Bring every state-dependent text, icon and enabled flag up to date."""
+        if not self._ready:
+            return
+        connected = self.camera_connected
+        waiting = self.streaming and not connected
+        resolution, fps, _size = PROFILES[self.profile_index]
+        self.profile_button.set_texts(self.t("profile"), resolution, f"{fps}fps")
+        for index, action in enumerate(self.profile_actions):
+            action.setIcon(self._check_icon if index == self.profile_index else self._blank_icon)
+        self._refresh_window_buttons()
+
+        if self.error_text:
+            state, text = "error", self.error_text
+        elif connected:
+            state, text = "on", self.t("status_on", link=self.link)
+        elif waiting:
+            usb = self.mode_seg.value() == "USB"
+            state, text = "wait", self.t("status_usb" if usb else "status_wifi")
+        else:
+            state, text = "off", self.t("status_off")
+        self.status_icon.setPixmap(self.status_pixmaps[state])
+        self.status_label.setText(text)
+
+        if not self.streaming:
+            button_text = self.t("connect")
+        elif connected or self.receiver is not None:
+            button_text = self.t("disconnect")
+        else:
+            button_text = self.t("stop_waiting")
+        self.connect_button.setText(button_text)
+        if self.connect_button.property("quiet") != self.streaming:
+            self.connect_button.setProperty("quiet", self.streaming)
+            self.connect_button.style().unpolish(self.connect_button)
+            self.connect_button.style().polish(self.connect_button)
+        self.mode_seg.setEnabled(not self.streaming)
+
+        if self.mode_seg.value() == "USB":
+            hint = self.t("hint_usb_vpn" if self.vpn_blocks_lan else "hint_usb")
+        elif self.vpn_blocks_lan:
+            hint = self.t("hint_wifi_vpn")
+        else:
+            hint = self.t("hint_wifi", host=self.host_select.currentText())
+        self.hint_label.setText(hint)
+
+        self.controls.setEnabled(connected)
+        self.focus_field.setEnabled(connected and not self.autofocus_switch.isChecked())
+        self.focus_value.setText(f"{self.focus_slider.value()}%")
+        exposure = self.exposure_slider.value() / 10
+        sign = "+" if exposure > 0 else "−" if exposure < 0 else ""
+        self.exposure_value.setText(f"{sign}{format_number(self.language, abs(exposure), 1)} EV")
+        self.zoom_value.setText(
+            f"{format_number(self.language, self.zoom_slider.value() / 10, 1)}×"
         )
+
+        paused = connected and self.paused
+        self.pause_button.setEnabled(connected)
+        self.pause_button.setIcon(self.icons["play" if paused else "pause"])
+        pause_name = self.t("resume" if paused else "pause")
+        self.pause_button.setToolTip(pause_name)
+        self.pause_button.setAccessibleName(pause_name)
+
+        self.preview.empty_title = self.t("empty_title")
+        self.preview.empty_text = self.t("empty_text")
+        self.preview.show_grid = self.grid_switch.isChecked() and not paused
+        self.preview.mirrored = self.mirror_switch.isChecked()
+        if paused:
+            self.preview.note = self.t("paused_note")
+        elif connected and self.info_switch.isChecked() and self.frame_size[0]:
+            width, height = self.frame_size
+            self.preview.note = (
+                f"{width}×{height} · {self.measured_fps:.0f} {self.t('fps_unit')} · {self.link}"
+            )
+        else:
+            self.preview.note = ""
+        self.preview.update()
+
+        if not connected:
+            note = self.t("vcam_wait")
+        elif paused:
+            note = self.t("vcam_paused")
+        else:
+            note = self.t("vcam_on", device=self.virtual_camera_device or "LumaLink Camera")
+        self.virtual_camera_note.setText(note)
+
+    def _show_settings(self) -> None:
+        popup = self.settings_popup
+        popup.adjustSize()
+        anchor = self.settings_button.mapToGlobal(
+            QPoint(self.settings_button.width(), self.settings_button.height() + 6)
+        )
+        popup.move(anchor - QPoint(popup.width(), 0))
+        popup.show()
+
+    def _show_profile_menu(self) -> None:
+        menu_width = self.profile_menu.sizeHint().width()
+        anchor = self.profile_button.mapToGlobal(
+            QPoint(self.profile_button.width() - menu_width, self.profile_button.height() + 6)
+        )
+        self.profile_menu.popup(anchor)
+
+    def _select_profile(self, index: int) -> None:
+        self.profile_index = index
+        self._refresh()
+        self._schedule_camera_control_update()
+
+    def _select_mode(self, _mode: str) -> None:
+        self.error_text = ""
+        self._refresh()
+
+    # ------------------------------------------------------- camera controls
+
+    def _camera_control_changed(self, *_args: object) -> None:
+        self._refresh()
+        self._schedule_camera_control_update()
 
     def _schedule_camera_control_update(self) -> None:
-        if not self.camera_connected:
-            return
-        if self.focus_slider is not None:
-            self.focus_slider.configure(
-                state="normal" if not self.autofocus_var.get() else "disabled"
-            )
-        if self.control_after_id is not None:
-            self.root.after_cancel(self.control_after_id)
-        self.control_after_id = self.root.after(
-            120, self._send_camera_control
-        )
+        if self.camera_connected:
+            self.control_timer.start()
+
+    def _reset_camera_controls(self) -> None:
+        self.autofocus_switch.setChecked(True)
+        self.focus_slider.setValue(50)
+        self.exposure_slider.setValue(0)
+        self.iso_seg.set_value("auto")
+        self.white_balance_select.setCurrentIndex(0)
+        self.lens_seg.set_value("rear")
+        self.zoom_slider.setValue(10)
+        self._camera_control_changed()
+
+    def camera_command(self) -> dict[str, object]:
+        resolution, fps, _size = PROFILES[self.profile_index]
+        iso = self.iso_seg.value()
+        return {
+            "autofocus": self.autofocus_switch.isChecked(),
+            "focus": self.focus_slider.value() / 100,
+            "exposure": self.exposure_slider.value() / 10,
+            "iso": PHONE_AUTO if iso == "auto" else iso,
+            "whiteBalance": PHONE_WHITE_BALANCE[self.white_balance_select.currentIndex()][1],
+            "lens": PHONE_LENS[self.lens_seg.value()],
+            "zoom": self.zoom_slider.value() / 10,
+            "fps": fps,
+            "resolution": resolution,
+        }
 
     def _send_camera_control(self) -> None:
-        self.control_after_id = None
-        command: dict[str, object] = {
-            "autofocus": self.autofocus_var.get(),
-            "focus": self.focus_var.get(),
-            "exposure": self.exposure_var.get(),
-            "iso": self.iso_var.get(),
-            "whiteBalance": self.white_balance_var.get(),
-            "lens": self.lens_var.get(),
-            "zoom": self.zoom_var.get(),
-            "fps": int(self.fps_var.get()),
-            "resolution": self.resolution_var.get(),
-        }
+        if not self.camera_connected:
+            return
         try:
             if self.receiver is not None:
-                self.receiver.send_control(command)
+                self.receiver.send_control(self.camera_command())
             elif self.stream_server is not None:
-                self.stream_server.send_control(command)
-        except (OSError, ConnectionError) as error:
-            self._receive_status(f"Не удалось отправить настройки камеры: {error}", True)
+                self.stream_server.send_control(self.camera_command())
+        except (OSError, ConnectionError):
+            # The phone has just gone away; the stream reports that itself.
+            pass
 
-    def _select_mode(self) -> None:
-        self.session = DeviceSession(
-            status=SessionStatus.DISCONNECTED,
-            mode=ConnectionMode(self.mode.get()),
-        )
-        self.connection_hint.configure(
-            text=(
-                "USB: включите на телефоне «USB-модем» — компьютер найдёт его сам "
-                "(может использоваться мобильный интернет телефона). "
-                "Wi-Fi без пароля: подключайтесь только к доверенной сети."
-            ),
-            fg=HINT_COLOR,
-        )
+    # ------------------------------------------------------------ connection
 
     def _toggle_connection(self) -> None:
         if self.stream_server is not None or self.receiver is not None:
-            if self.stream_server is not None:
-                self.stream_server.stop()
-                self.stream_server = None
-            if self.receiver is not None:
-                self.receiver.stop()
-                self.receiver = None
-            self.streaming = False
-            self.camera_connected = False
-            self._stop_virtual_camera()
-            self._set_camera_controls_enabled(False)
-            self.frame_timestamps.clear()
-            try:
-                self.frames.get_nowait()
-            except queue.Empty:
-                pass
-            self.connect_button.configure(text="Подключить камеру")
-            self._set_status("Ожидание телефона остановлено", False)
+            self._disconnect()
+            self._refresh()
             return
 
+        self.error_text = ""
         self.decoder = H264Decoder()
         self.virtual_camera_failed = False
-        vpn_blocks_lan = local_network_blocked()
-        if self.mode.get() == ConnectionMode.USB.value:
+        self.vpn_blocks_lan = local_network_blocked()
+        if self.mode_seg.value() == "USB":
+            self.link = "USB"
             self.receiver = H264FrameReceiver(
                 None,
                 STREAM_PORT,
                 self._receive_frame,
                 self._receive_status,
                 usb=True,
+                adb_fallback=self.adb_switch.isChecked(),
             )
             self.streaming = True
             self.receiver.start()
-            self.connection_hint.configure(
-                text=(
-                    "VPN на этом компьютере блокирует локальную сеть, поэтому "
-                    "«USB-модем» не сработает. Включите на телефоне «Отладку по USB» — "
-                    "подключение пойдёт в обход VPN. Либо добавьте LumaLink Studio "
-                    "в исключения VPN (раздельное туннелирование)."
-                    if vpn_blocks_lan
-                    else "На телефоне включите «USB-модем», оставьте поле IP пустым "
-                    "и нажмите «Начать трансляцию»."
-                ),
-                fg=COLORS["warning"] if vpn_blocks_lan else HINT_COLOR,
-            )
         else:
-            host = self.host_entry.get().strip()
+            self.link = "Wi-Fi"
+            host = self.host_select.currentText().strip()
             try:
                 address = ipaddress.IPv4Address(host)
+                usable = address.is_private and not address.is_loopback
             except ipaddress.AddressValueError:
-                self._set_status("Введите корректный IPv4-адрес компьютера", True)
+                usable = False
+            if not usable:
+                self.error_text = self.t("error_host")
+                self._refresh()
                 return
-            if not address.is_private or address.is_loopback:
-                self._set_status(
-                    "Для камеры выберите приватный IPv4-адрес локальной сети",
-                    True,
-                )
-                return
-
             self.stream_server = CameraStreamServer(
                 self._receive_frame,
                 self._receive_status,
@@ -721,31 +837,34 @@ class CameraStudioApp:
             except OSError as error:
                 self.streaming = False
                 self.stream_server = None
-                self._set_status(f"Не удалось открыть порт {STREAM_PORT}: {error}", True)
-                return
-        self.streaming = True
-        self.connect_button.configure(
-            text="Отключить камеру" if self.receiver is not None else "Остановить ожидание"
-        )
-        self._set_status(
-            "Ищем телефон по USB…" if self.receiver is not None
-            else "Запущено ожидание телефона…",
-            False,
-        )
-        if self.mode.get() == ConnectionMode.WIFI.value:
-            self.connection_hint.configure(
-                text=(
-                    "VPN на этом компьютере блокирует локальную сеть: телефон не сможет "
-                    "подключиться по Wi-Fi. Добавьте LumaLink Studio в исключения VPN "
-                    "(раздельное туннелирование) или разрешите в VPN доступ к локальной "
-                    "сети. Без этого работает только USB с «Отладкой по USB»."
-                    if vpn_blocks_lan
-                    else "На телефоне выберите Wi-Fi и нажмите «Начать трансляцию» — "
-                    f"компьютер найдётся сам. Если не найдётся, введите там IP {host}. "
-                    "Без кода доступа — только доверенная сеть."
-                ),
-                fg=COLORS["warning"] if vpn_blocks_lan else HINT_COLOR,
-            )
+                self.error_text = self.t("error_port", port=STREAM_PORT, error=error)
+        self._refresh()
+
+    def _disconnect(self) -> None:
+        if self.stream_server is not None:
+            self.stream_server.stop()
+            self.stream_server = None
+        if self.receiver is not None:
+            self.receiver.stop()
+            self.receiver = None
+        self.streaming = False
+        self._forget_camera()
+
+    def _forget_camera(self) -> None:
+        """Return to the state without a phone picture."""
+        self.camera_connected = False
+        self.paused = False
+        self.paused_image = None
+        self.latest_image = None
+        self._stop_virtual_camera()
+        self.frame_timestamps.clear()
+        self.frame_size = (0, 0)
+        self.measured_fps = 0.0
+        try:
+            self.frames.get_nowait()
+        except queue.Empty:
+            pass
+        self.preview.set_image(None)
 
     @staticmethod
     def _local_ipv4_addresses() -> list[str]:
@@ -763,12 +882,23 @@ class CameraStudioApp:
             ),
         ) or ["127.0.0.1"]
 
+    # ---------------------------------------------------------------- stream
+
     def _receive_frame(self, frame: bytes) -> None:
+        """Called on the network thread for every H.264 access unit."""
         if not self.streaming:
             return
         for image in self.decoder.decode(frame):
             image = correct_stream_orientation(image)
             virtual_camera = self.virtual_camera
+            if self.paused:
+                # Keep decoding so the picture is intact on resume, but show
+                # everyone the still frame.
+                still = self.paused_image
+                if virtual_camera is not None and still is not None:
+                    virtual_camera.submit(still)
+                continue
+            self.latest_image = image
             if virtual_camera is not None:
                 virtual_camera.submit(image)
             try:
@@ -782,6 +912,23 @@ class CameraStudioApp:
 
     def _receive_status(self, message: str, is_error: bool) -> None:
         self.status_messages.put((message, is_error))
+
+    def _toggle_pause(self) -> None:
+        if not self.camera_connected:
+            return
+        if self.paused:
+            self.paused = False
+            self.paused_image = None
+        else:
+            source = self.latest_image
+            if source is None:
+                return
+            self.paused_image = paused_frame(source)
+            self.paused = True
+            self.preview.set_image(self.paused_image)
+            if self.virtual_camera is not None:
+                self.virtual_camera.submit(self.paused_image)
+        self._refresh()
 
     def _start_virtual_camera(self) -> None:
         """Feed the virtual camera for as long as the phone is connected.
@@ -808,6 +955,7 @@ class CameraStudioApp:
             output.stop()
 
     def _poll_stream(self) -> None:
+        changed = False
         while True:
             try:
                 run, message, is_error = self.virtual_camera_status_messages.get_nowait()
@@ -819,102 +967,61 @@ class CameraStudioApp:
                 # Do not retry on every frame; the next connection tries again.
                 self.virtual_camera_failed = True
                 self._stop_virtual_camera()
-                self._set_status(message, True)
+                self.error_text = message
             elif message.startswith("Виртуальная камера запущена: "):
                 self.virtual_camera_device = message.partition(": ")[2]
+            changed = True
 
         while True:
             try:
                 message, is_error = self.status_messages.get_nowait()
             except queue.Empty:
                 break
-            self._set_status(
-                message,
-                is_error,
-                connected=not is_error and message.startswith("Получаем H.264-видео"),
-            )
-            if is_error:
-                self.camera_connected = False
-                self._stop_virtual_camera()
-                self._set_camera_controls_enabled(False)
-            if is_error and self.receiver is not None:
+            changed = True
+            if not is_error:
+                if "(ADB)" in message:
+                    self.link = "USB (ADB)"
+                continue
+            self.error_text = message
+            self._forget_camera()
+            if self.receiver is not None:
                 self.receiver.stop()
                 self.receiver = None
                 self.streaming = False
-                self.connect_button.configure(text="Подключить камеру")
 
         try:
             frame = self.frames.get_nowait()
         except queue.Empty:
             frame = None
-        if frame is not None:
-            try:
-                image = frame.copy()
-                source_width, source_height = image.size
-                self.frame_timestamps.append(time.monotonic())
-                measured_fps = 0.0
-                if len(self.frame_timestamps) > 1:
-                    duration = self.frame_timestamps[-1] - self.frame_timestamps[0]
-                    if duration > 0:
-                        measured_fps = (len(self.frame_timestamps) - 1) / duration
-                width = max(self.preview_panel.winfo_width(), 1)
-                height = max(self.preview_panel.winfo_height(), 1)
-                image.thumbnail((width, height), Image.Resampling.LANCZOS)
-                self.preview_image = ImageTk.PhotoImage(image)
-                self.preview_label.configure(image=self.preview_image)
-                self.preview_label.place(relx=0.5, rely=0.5, anchor="center")
-                self.preview_placeholder.place_forget()
-                self.preview_signal_label.configure(text="ВХОДЯЩИЙ СИГНАЛ")
-                self.preview_resolution_label.configure(
-                    text=(
-                        f"  ·  {source_width}×{source_height}"
-                        + (f" / {measured_fps:.0f} FPS" if measured_fps else "")
-                    )
-                )
-                if not self.camera_connected:
-                    self.camera_connected = True
-                    self._set_camera_controls_enabled(True)
-                    self._send_camera_control()
-                    self._start_virtual_camera()
-                if not self.virtual_camera_failed:
-                    self._set_status(
-                        "Камера подключена"
-                        + (f" · {self.virtual_camera_device}" if self.virtual_camera_device else ""),
-                        False,
-                        connected=True,
-                    )
-            except (OSError, tk.TclError) as error:
-                self._set_status(f"Не удалось отобразить кадр: {error}", True)
+        if frame is not None and self.streaming and not self.paused:
+            self.frame_size = frame.size
+            self.frame_timestamps.append(time.monotonic())
+            if len(self.frame_timestamps) > 1:
+                duration = self.frame_timestamps[-1] - self.frame_timestamps[0]
+                if duration > 0:
+                    self.measured_fps = (len(self.frame_timestamps) - 1) / duration
+            self.preview.set_image(frame)
+            if not self.camera_connected:
+                self.camera_connected = True
+                self.error_text = ""
+                self._send_camera_control()
+                self._start_virtual_camera()
+                changed = True
+            elif self.info_switch.isChecked():
+                changed = True
+        if changed:
+            self._refresh()
 
-        self.root.after(16, self._poll_stream)
-
-    def _set_status(
-        self,
-        message: str,
-        is_error: bool,
-        connected: bool = False,
-    ) -> None:
-        self.status_label.configure(
-            text=message,
-            fg=COLORS["warning"] if is_error else (
-                COLORS["green"] if connected else COLORS["muted"]
-            ),
-        )
-        color = COLORS["warning"] if is_error else (
-            COLORS["green"] if connected else COLORS["muted"]
-        )
-        self.status_dot.itemconfigure(1, fill=color)
-
-    def _close(self) -> None:
-        if self.stream_server is not None:
-            self.stream_server.stop()
-        if self.receiver is not None:
-            self.receiver.stop()
-        self._stop_virtual_camera()
-        self.root.destroy()
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.poll_timer.stop()
+        self._disconnect()
+        super().closeEvent(event)
 
 
 def run() -> None:
-    root = tk.Tk()
-    CameraStudioApp(root)
-    root.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(STYLE_SHEET)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

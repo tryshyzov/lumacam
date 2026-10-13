@@ -9,7 +9,7 @@ Windows desktop prototype for using an Android phone as a camera. The iOS compan
 
 ## Run the desktop app
 
-Requires Python 3.10+ with Tkinter and the packages in `requirements.txt`:
+Requires Python 3.10+ and the packages in `requirements.txt` (the interface uses PySide6, the Qt for Python bindings):
 
 ```powershell
 python -m pip install -r requirements.txt

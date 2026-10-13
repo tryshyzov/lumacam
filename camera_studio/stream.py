@@ -393,12 +393,14 @@ class H264FrameReceiver:
         on_frame: Callable[[bytes], None],
         on_status: Callable[[str, bool], None],
         usb: bool,
+        adb_fallback: bool = True,
     ) -> None:
         self._host = host
         self._port = port
         self._on_frame = on_frame
         self._on_status = on_status
         self._usb = usb
+        self._adb_fallback = adb_fallback
         self._stop = threading.Event()
         self._connection: socket.socket | None = None
         self._adb_forward: AdbForward | None = None
@@ -420,7 +422,7 @@ class H264FrameReceiver:
             host = discover_usb_camera(self._stop, timeout=3.0)
             return socket.create_connection((host, self._port), timeout=5)
         except OSError as tethering_error:
-            if self._stop.is_set():
+            if self._stop.is_set() or not self._adb_fallback:
                 raise
             self._on_status("Сеть USB-модема недоступна, пробуем ADB…", False)
             try:
