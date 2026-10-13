@@ -1,5 +1,8 @@
 # LumaLink Studio
 
+# Для пользователей из России и Украины, перевод можно найти в [другом руководстве](README-ru.md).
+
+
 <p align="center"><img src="assets/LumaCam.png" alt="LumaLink Studio logo" width="240"></p>
 
 Windows desktop prototype for using an Android phone as a camera. The iOS companion and production installer are not implemented yet. (Pure vibecoding.) 
@@ -122,5 +125,3 @@ OBS Virtual Camera or Unity Capture must be installed separately; LumaLink does 
 4. USB transport polish and Wi-Fi latency/reconnect validation.
 5. iOS companion, capability mapping, and USB/Wi-Fi interoperability.
 6. Installer/signing, compatibility testing, and end-to-end device matrix.
-
-The repository currently contains the desktop UI, Android camera preview, USB/Wi-Fi H.264 video transport, Android camera controls, and user-mode output through OBS Virtual Camera or Unity Capture. The former LumaLink AVStream driver is no longer built, installed, or used by the app; its source is retained only as a deprecated prototype. OBS and Unity have been tested through DirectShow on the development PC; compatibility in every target client, Wi-Fi latency/reconnect validation, truthful per-device control availability, iOS support, and signed production releases remain unfinished.
