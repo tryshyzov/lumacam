@@ -1,3 +1,4 @@
+import functools
 import queue
 import threading
 import time
@@ -75,8 +76,9 @@ class VirtualCameraOutput:
                         if last_frame_at and time.monotonic() - last_frame_at > FRAME_TIMEOUT:
                             frame = idle_frame()
                             last_frame_at = 0.0
+                    # Paced by the frames themselves: waiting for the next one
+                    # above already takes a frame interval at most.
                     camera.send(frame)
-                    self._stop.wait(1 / OUTPUT_FPS)
         except Exception as error:
             if not self._stop.is_set():
                 self._on_status(
@@ -89,6 +91,8 @@ class VirtualCameraOutput:
 
 def _to_output_frame(image: Image.Image) -> np.ndarray:
     image = image.convert("RGB")
+    if image.size == (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        return np.array(image, dtype=np.uint8, copy=True, order="C")
     image.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.Resampling.BILINEAR)
     canvas = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT))
     canvas.paste(
@@ -98,7 +102,8 @@ def _to_output_frame(image: Image.Image) -> np.ndarray:
     return np.array(canvas, dtype=np.uint8, copy=True, order="C")
 
 
-def idle_frame(width: int = OUTPUT_WIDTH, height: int = OUTPUT_HEIGHT) -> np.ndarray:
+@functools.lru_cache(maxsize=2)
+def _idle_frame(width: int, height: int) -> np.ndarray:
     """The image shown while no phone is streaming: a camera glyph on gray.
 
     It matches the idle image the LumaLink Camera filter draws by itself when
@@ -130,4 +135,11 @@ def idle_frame(width: int = OUTPUT_WIDTH, height: int = OUTPUT_HEIGHT) -> np.nda
         fill=IDLE_GLYPH,
     )
     gray = np.asarray(image.reduce(scale), dtype=np.uint8)
-    return np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2))
+    frame = np.ascontiguousarray(np.repeat(gray[:, :, None], 3, axis=2))
+    frame.setflags(write=False)
+    return frame
+
+
+def idle_frame(width: int = OUTPUT_WIDTH, height: int = OUTPUT_HEIGHT) -> np.ndarray:
+    """The idle image; drawn once per size and shared, so it is read-only."""
+    return _idle_frame(width, height)

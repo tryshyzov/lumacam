@@ -14,3 +14,7 @@ Third-party components:
   Copyright (c) 2016 MHD Yamen Saraiji. MIT License; see
   virtualcam/LICENSE.txt. It includes the Microsoft DirectShow base classes
   (streams.cpp, streams.h), Copyright (c) 1992-2001 Microsoft Corporation.
+
+- Qt and PySide6 (Qt for Python), bundled with the Windows executable.
+  Copyright The Qt Company Ltd. Used under the GNU Lesser General Public
+  License v3; the source is available from https://www.qt.io/.

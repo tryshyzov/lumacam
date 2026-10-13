@@ -5,7 +5,7 @@
 Прототип приложения для Windows, использующего Android-смартфон в качестве камеры. Приложение для iOS и установочный файл пока не реализованы. (Полностью вайбкодинг.) 
 
 ## Запуск на ПК
-Необходим Python 3.10+ с Tkinter и все пакеты из `requirements.txt`:
+Необходим Python 3.10+ и все пакеты из `requirements.txt` (интерфейс написан на PySide6 — Qt для Python):
 
 ```powershell
 python -m pip install -r requirements.txt
