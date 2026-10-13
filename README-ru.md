@@ -20,14 +20,14 @@ python -m unittest discover -s tests -v
 
 ## Сборка .exe файла на Windows
 
-On Windows, install PyInstaller and build a standalone windowed executable:
+На Windows, установите PyInstaller и соберите исполняемый файл:
 
 ```powershell
 python -m pip install -r requirements.txt pyinstaller
 python -m PyInstaller --noconfirm --clean LumaLinkStudio.spec
 ```
 
-The executable is written to `dist\LumaLinkStudio.exe`.
+Исполняемый файл записывается в `dist\LumaLinkStudio.exe`.
 
 ## Сборка Windows инсталлятора
 
