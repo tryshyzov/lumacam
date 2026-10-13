@@ -25,3 +25,6 @@ vendor/platform-tools/
 # Editor and local tool state
 .idea/
 .claude/settings.local.json
+
+# Built by msbuild from virtualcam/
+virtualcam/Build/

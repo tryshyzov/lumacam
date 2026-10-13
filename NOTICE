@@ -8,3 +8,9 @@ Third-party components:
 - Android SDK Platform-Tools (adb), bundled with the Windows executable.
   Copyright The Android Open Source Project. Apache License 2.0; the full
   notices ship in vendor/platform-tools/NOTICE.txt.
+
+- LumaLink Camera (virtualcam/), a modified version of the Unity Capture
+  filter. Copyright (c) 2018 Bernhard Schelling, based on UnityCam,
+  Copyright (c) 2016 MHD Yamen Saraiji. MIT License; see
+  virtualcam/LICENSE.txt. It includes the Microsoft DirectShow base classes
+  (streams.cpp, streams.h), Copyright (c) 1992-2001 Microsoft Corporation.

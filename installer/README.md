@@ -1,18 +1,27 @@
 # Windows installer
 
-The Inno Setup project builds `dist\installer\LumaLinkStudio-Setup-0.1.0.exe` from the already-built desktop executable:
+The Inno Setup project builds `dist\installer\LumaLinkStudio-Setup-<version>.exe` from the already-built desktop executable and virtual camera:
 
 ```powershell
 python -m PyInstaller --noconfirm --clean LumaLinkStudio.spec
+msbuild virtualcam\LumaLinkCamera.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild virtualcam\LumaLinkCamera.vcxproj /p:Configuration=Release /p:Platform=Win32
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" installer\LumaLinkStudio.iss
 ```
 
-The installer is per-user and does not require administrator rights. It contains no kernel driver, driver certificate, or boot configuration changes. Virtual-camera output uses the OBS Virtual Camera backend when available, then falls back to Unity Capture. Users must install OBS Studio or Unity Capture separately. Both the desktop executable and setup are unsigned development artifacts and must not be presented as a production release.
+## What it installs
 
-## Camera backend behavior
+- `LumaLinkStudio.exe`, into `C:\Program Files\LumaLink Studio`.
+- `LumaLinkCamera64.dll` and `LumaLinkCamera32.dll`, the **LumaLink Camera** DirectShow filter, registered with COM so that applications list it as a camera.
 
-LumaLink itself no longer installs or communicates with a custom kernel driver. The virtual camera output opens `OBS Virtual Camera` first and tries `Unity Video Capture` if OBS is absent or cannot start. A backend must already be installed and registered with Windows; the LumaLink installer never changes Secure Boot, test-signing, certificates, or camera-device drivers.
+The installer requires administrator rights: registering a camera for every application writes to `HKEY_LOCAL_MACHINE`. It contains no kernel driver, driver certificate, or boot configuration changes, and never touches Secure Boot or test-signing.
 
-This user-mode design avoids the custom driver's Microsoft Hardware Developer Program signing requirement. OBS/Unity remain separate camera integrations, so their installation, device registration, and target-app compatibility still need to be present on the user's Windows 10 or 11 computer. Windows 11's Media Foundation virtual-camera API is not currently implemented as a standalone LumaLink backend.
+Uninstalling unregisters the camera and removes the files. If an application has the camera open during an upgrade, the DLL is replaced on the next restart.
 
-The app and installer can optionally be signed with an Authenticode code-signing certificate for publisher identity and reputation. That is separate from driver signing; the current development builds are unsigned.
+Both the desktop executable and setup are unsigned development artifacts. They can be signed with an Authenticode code-signing certificate for publisher identity and reputation; that is separate from driver signing, which this design does not need.
+
+## Camera behavior
+
+LumaLink Studio sends video to LumaLink Camera and needs no third-party camera software. While no phone is streaming, or while LumaLink Studio is closed, the camera shows an idle image. Without the installer (running from source or from the standalone executable) the app falls back to OBS Virtual Camera and then Unity Capture, if one of them is installed.
+
+DirectShow cameras are listed by desktop applications; Microsoft Store applications and the Windows Camera app do not show them. Windows 11's Media Foundation virtual-camera API is not implemented.
