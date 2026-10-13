@@ -1,5 +1,8 @@
 ﻿#define AppName "LumaLink Studio"
-#define AppVersion "0.1.0"
+; CI passes the release version with /DAppVersion=x.y.z.
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define AppExe "..\dist\LumaLinkStudio.exe"
 
 [Setup]

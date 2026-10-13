@@ -3,6 +3,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Release signing and versioning come from the environment (set by CI); without
+// them the release build stays unsigned and the debug build is used instead.
+fun environment(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
+
+val releaseKeystore = environment("LUMALINK_KEYSTORE_FILE")
+
 android {
     namespace = "com.lumalink.companion"
     compileSdk = 35
@@ -11,8 +17,26 @@ android {
         applicationId = "com.lumalink.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = environment("LUMALINK_VERSION_CODE")?.toIntOrNull() ?: 1
+        versionName = environment("LUMALINK_VERSION_NAME") ?: "0.1.0"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = environment("LUMALINK_KEYSTORE_PASSWORD")
+                keyAlias = "lumalink"
+                keyPassword = environment("LUMALINK_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
     }
 
     compileOptions {

@@ -24,6 +24,9 @@ USB_FRAME_ACK = b"\x06"
 USB_DISCOVERY_PORT = 8766
 USB_DISCOVERY_REQUEST = b"LUMALINK-DISCOVER-1"
 USB_DISCOVERY_REPLY = b"LUMALINK-CAMERA-1"
+STUDIO_DISCOVERY_PORT = 8767
+STUDIO_DISCOVERY_REQUEST = b"LUMALINK-FIND-STUDIO-1"
+STUDIO_DISCOVERY_REPLY = b"LUMALINK-STUDIO-1"
 MAX_FRAME_SIZE = 4_000_000
 LAN_PROBE_PORT = 9
 WSAEACCES = 10013
@@ -201,9 +204,12 @@ class CameraStreamServer:
         on_status: Callable[[str, bool], None],
         host: str = "0.0.0.0",
         port: int = 8765,
+        discovery_port: int | None = STUDIO_DISCOVERY_PORT,
     ) -> None:
         self._bind_host = host
         self._port = port
+        self._discovery_port = discovery_port
+        self._discovery: socket.socket | None = None
         self._on_frame = on_frame
         self._on_status = on_status
         self._stop = threading.Event()
@@ -228,9 +234,57 @@ class CameraStreamServer:
         self._port = listener.getsockname()[1]
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        self._start_discovery()
+
+    def _start_discovery(self) -> None:
+        """Let phones on the Wi-Fi network find this computer without typing its IP."""
+        if self._discovery_port is None:
+            return
+        responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            responder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            responder.bind(("", self._discovery_port))
+            responder.settimeout(0.5)
+        except OSError:
+            # Discovery is a convenience; the phone can still be given the IP.
+            responder.close()
+            return
+        self._discovery = responder
+        threading.Thread(
+            target=self._answer_discovery,
+            args=(responder,),
+            daemon=True,
+        ).start()
+
+    def _answer_discovery(self, responder: socket.socket) -> None:
+        while not self._stop.is_set():
+            try:
+                request, sender = responder.recvfrom(64)
+            except (socket.timeout, ConnectionResetError):
+                continue
+            except OSError:
+                return
+            if request != STUDIO_DISCOVERY_REQUEST or not self._serves(sender[0]):
+                continue
+            try:
+                responder.sendto(STUDIO_DISCOVERY_REPLY, sender)
+            except OSError:
+                pass
+
+    def _serves(self, peer: str) -> bool:
+        """Whether ``peer`` is on the network this server listens on."""
+        bind_address = ipaddress.IPv4Address(self._bind_host)
+        if bind_address.is_unspecified:
+            return True
+        network = ipaddress.IPv4Network(f"{self._bind_host}/24", strict=False)
+        return ipaddress.IPv4Address(peer) in network
 
     def stop(self) -> None:
         self._stop.set()
+        discovery = self._discovery
+        self._discovery = None
+        if discovery is not None:
+            discovery.close()
         client = self._client
         self._client = None
         if client is not None:
