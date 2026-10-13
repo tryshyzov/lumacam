@@ -9,6 +9,8 @@ from unittest import mock
 from PIL import Image
 
 from camera_studio.stream import (
+    STUDIO_DISCOVERY_REPLY,
+    STUDIO_DISCOVERY_REQUEST,
     USB_DISCOVERY_REPLY,
     USB_DISCOVERY_REQUEST,
     USB_FRAME_ACK,
@@ -282,6 +284,31 @@ class H264TransportTests(unittest.TestCase):
         finally:
             client.close()
             server.stop()
+
+    def test_stream_server_answers_wifi_discovery_from_its_network(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as free:
+            free.bind(("127.0.0.1", 0))
+            discovery_port = free.getsockname()[1]
+        server = CameraStreamServer(
+            lambda _frame: None,
+            lambda _message, _is_error: None,
+            host="127.0.0.1",
+            port=0,
+            discovery_port=discovery_port,
+        )
+        server.start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as phone:
+                phone.settimeout(2)
+                phone.sendto(b"something else", ("127.0.0.1", discovery_port))
+                phone.sendto(STUDIO_DISCOVERY_REQUEST, ("127.0.0.1", discovery_port))
+                reply, _ = phone.recvfrom(64)
+        finally:
+            server.stop()
+
+        self.assertEqual(reply, STUDIO_DISCOVERY_REPLY)
+        self.assertTrue(server._serves("127.0.0.200"))
+        self.assertFalse(server._serves("192.168.1.5"))
 
     def test_stream_server_rejects_unknown_endpoint(self) -> None:
         server = CameraStreamServer(

@@ -3,14 +3,26 @@ package com.lumalink.companion
 import android.util.Log
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.IOException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.json.JSONObject
 
+/**
+ * Streams the camera to LumaLink Studio over Wi-Fi.
+ *
+ * With no [requestedHost] the computer is found by broadcasting a discovery
+ * probe, which a listening LumaLink Studio answers.
+ */
 internal class H264Publisher(
-    private val host: String,
+    private val requestedHost: String?,
     private val onStatus: (String, Boolean) -> Unit,
     private val onControl: (JSONObject) -> Unit,
 ) {
@@ -18,6 +30,7 @@ internal class H264Publisher(
     private val running = AtomicBoolean(false)
     @Volatile private var latestFrame: ByteArray? = null
     @Volatile private var socket: Socket? = null
+    @Volatile private var discoverySocket: DatagramSocket? = null
 
     fun start() {
         check(running.compareAndSet(false, true)) { "Трансляция уже запущена" }
@@ -35,6 +48,7 @@ internal class H264Publisher(
 
     fun stop() {
         running.set(false)
+        discoverySocket?.close()
         try {
             socket?.close()
         } catch (_: Exception) {
@@ -46,7 +60,10 @@ internal class H264Publisher(
     }
 
     private fun publish() {
+        var host = requestedHost ?: "?"
         try {
+            host = requestedHost ?: discoverComputer()
+            onStatus("Подключение к $host:$PORT…", false)
             val connection = Socket()
             socket = connection
             connection.connect(InetSocketAddress(host, PORT), CONNECT_TIMEOUT_MS)
@@ -119,7 +136,10 @@ internal class H264Publisher(
         } catch (error: Exception) {
             if (running.get()) {
                 Log.e(TAG, "Camera stream connection failed for $host:$PORT", error)
-                onStatus("Ошибка подключения: ${error.localizedMessage}", true)
+                onStatus(
+                    "Ошибка подключения: ${error.localizedMessage ?: "соединение закрыто"}",
+                    true,
+                )
             }
         } finally {
             running.set(false)
@@ -130,6 +150,62 @@ internal class H264Publisher(
             }
             socket = null
         }
+    }
+
+    private fun discoverComputer(): String {
+        onStatus("Ищем компьютер в сети Wi-Fi…", false)
+        DatagramSocket().use { probe ->
+            discoverySocket = probe
+            probe.broadcast = true
+            probe.soTimeout = DISCOVERY_INTERVAL_MS
+            repeat(DISCOVERY_ATTEMPTS) {
+                check(running.get()) { "Трансляция остановлена" }
+                for (target in broadcastAddresses()) {
+                    try {
+                        probe.send(
+                            DatagramPacket(
+                                DISCOVERY_REQUEST,
+                                DISCOVERY_REQUEST.size,
+                                target,
+                                DISCOVERY_PORT,
+                            ),
+                        )
+                    } catch (_: IOException) {
+                        // This interface cannot broadcast; the others may still work.
+                    }
+                }
+                try {
+                    val reply = DatagramPacket(ByteArray(64), 64)
+                    probe.receive(reply)
+                    val address = reply.address.hostAddress
+                    if (
+                        address != null &&
+                        reply.data.copyOf(reply.length).contentEquals(DISCOVERY_REPLY)
+                    ) {
+                        return address
+                    }
+                } catch (_: SocketTimeoutException) {
+                    // No answer yet; probe again.
+                }
+            }
+        }
+        throw IllegalStateException(
+            "компьютер не найден. Нажмите «Подключить камеру» (Wi-Fi) в LumaLink Studio " +
+                "или введите IP компьютера вручную",
+        )
+    }
+
+    private fun broadcastAddresses(): Set<InetAddress> {
+        val addresses = mutableSetOf(InetAddress.getByName("255.255.255.255"))
+        try {
+            for (network in NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()) {
+                if (!network.isUp || network.isLoopback) continue
+                network.interfaceAddresses.mapNotNullTo(addresses) { it.broadcast }
+            }
+        } catch (_: Exception) {
+            // The limited broadcast address alone is usually enough.
+        }
+        return addresses
     }
 
     private fun readHttpLine(input: DataInputStream): String {
@@ -145,6 +221,11 @@ internal class H264Publisher(
     companion object {
         private const val PORT = 8765
         private const val CONNECT_TIMEOUT_MS = 5_000
+        private const val DISCOVERY_PORT = 8767
+        private const val DISCOVERY_INTERVAL_MS = 500
+        private const val DISCOVERY_ATTEMPTS = 12
+        private val DISCOVERY_REQUEST = "LUMALINK-FIND-STUDIO-1".toByteArray(Charsets.US_ASCII)
+        private val DISCOVERY_REPLY = "LUMALINK-STUDIO-1".toByteArray(Charsets.US_ASCII)
         private const val MAX_CONTROL_SIZE = 16_384
         private const val FRAME_ACK = 0x06
         private const val TAG = "LumaLink"

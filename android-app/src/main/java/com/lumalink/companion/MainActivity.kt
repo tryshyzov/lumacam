@@ -12,11 +12,15 @@ import android.util.Range
 import android.util.Size
 import android.view.Gravity
 import android.view.Surface
+import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,6 +51,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var streamButton: Button
     private lateinit var streamInfo: TextView
     private lateinit var computerAddress: EditText
+    private lateinit var usbModeButton: RadioButton
+    private lateinit var wifiModeButton: RadioButton
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null
     private var activeCamera: Camera? = null
@@ -161,8 +167,6 @@ class MainActivity : ComponentActivity() {
             ),
         )
         streamInfo = TextView(this).apply {
-            text = "Wi-Fi: введите IP компьютера из LumaLink Studio.\n" +
-                "USB: включите «USB-модем» и оставьте поле пустым. Код доступа не нужен."
             setTextColor(Color.rgb(190, 194, 205))
             textSize = 12f
             setPadding(0, dp(8), 0, 0)
@@ -174,9 +178,36 @@ class MainActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ),
         )
+        usbModeButton = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "USB"
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, dp(24), 0)
+        }
+        wifiModeButton = RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "Wi-Fi"
+            setTextColor(Color.WHITE)
+        }
+        val modeGroup = RadioGroup(this).apply {
+            orientation = RadioGroup.HORIZONTAL
+            addView(usbModeButton)
+            addView(wifiModeButton)
+            check(usbModeButton.id)
+            setOnCheckedChangeListener { _, _ -> showModeHelp() }
+        }
+        bottomPanel.addView(
+            modeGroup,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(4)
+            },
+        )
         computerAddress = EditText(this).apply {
             setSingleLine(true)
-            hint = "IP компьютера (пусто — USB)"
+            hint = "IP компьютера (необязательно)"
             textSize = 14f
             setTextColor(Color.WHITE)
             setHintTextColor(Color.LTGRAY)
@@ -240,6 +271,34 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(root)
         ViewCompat.requestApplyInsets(root)
+        showModeHelp()
+    }
+
+    private fun showModeHelp() {
+        val wifi = wifiModeButton.isChecked
+        computerAddress.visibility = if (wifi) View.VISIBLE else View.GONE
+        streamInfo.text = if (wifi) {
+            "В LumaLink Studio выберите Wi-Fi и нажмите «Подключить камеру», затем здесь — " +
+                "«Начать трансляцию». Компьютер найдётся сам; если нет, введите его IP. " +
+                "Без кода доступа — только доверенная сеть."
+        } else {
+            "Включите «USB-модем» в настройках телефона и нажмите «Начать трансляцию», " +
+                "затем в LumaLink Studio выберите USB и нажмите «Подключить камеру»."
+        }
+    }
+
+    private fun updateStreamingState() {
+        val streaming = publisher != null || localServer != null
+        streamButton.text = if (streaming) "Остановить трансляцию" else "Начать трансляцию"
+        streamButton.isEnabled = cameraReady
+        usbModeButton.isEnabled = !streaming
+        wifiModeButton.isEnabled = !streaming
+        // The stream stops when the screen turns off, so keep it on while streaming.
+        if (streaming) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun startCamera() {
@@ -494,8 +553,7 @@ class MainActivity : ComponentActivity() {
         if (publisher != null) {
             publisher?.stop()
             publisher = null
-            streamButton.text = "Начать трансляцию"
-            streamButton.isEnabled = cameraReady
+            updateStreamingState()
         }
         lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
             CameraSelector.LENS_FACING_FRONT
@@ -683,63 +741,60 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun toggleStreaming() {
-        if (publisher != null) {
+        if (publisher != null || localServer != null) {
             publisher?.stop()
             publisher = null
-            streamButton.text = "Начать трансляцию"
-            streamButton.isEnabled = cameraReady
-            statusLabel.text = "Предпросмотр · камера готова"
-            return
-        }
-        if (localServer != null) {
             localServer?.stop()
             localServer = null
-            streamButton.text = "Начать трансляцию"
-            streamButton.isEnabled = cameraReady
             statusLabel.text = "Предпросмотр · камера готова"
+            updateStreamingState()
             return
         }
         if (!cameraReady) {
             statusLabel.text = "Сначала дождитесь запуска камеры"
             return
         }
+        if (usbModeButton.isChecked) startUsbStream() else startWifiStream()
+        updateStreamingState()
+    }
 
-        val host = computerAddress.text.toString().trim()
-        if (host.isBlank() || host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)) {
-            val server = UsbFrameServer(
-                onStatus = { status -> runOnUiThread { statusLabel.text = status } },
-                onControl = { command ->
-                    runOnUiThread { applyCameraControl(command) }
-                },
-            )
-            try {
-                server.start()
-                localServer = server
-                streamButton.text = "Остановить трансляцию"
-                streamInfo.text =
-                    "Включите «USB-модем», затем в LumaLink Studio выберите USB " +
-                        "и нажмите «Подключить камеру»."
-            } catch (error: Exception) {
-                Log.e(TAG, "Could not start USB camera stream", error)
-                statusLabel.text = "Не удалось открыть USB-канал: ${error.localizedMessage}"
-            }
-            return
-        }
+    private fun startUsbStream() {
+        val server = UsbFrameServer(
+            onStatus = { status -> runOnUiThread { statusLabel.text = status } },
+            onControl = { command ->
+                runOnUiThread { applyCameraControl(command) }
+            },
+        )
         try {
-            InetAddress.getByName(host)
+            server.start()
+            localServer = server
         } catch (error: Exception) {
-            statusLabel.text = "Введите IP-адрес компьютера в локальной сети"
-            return
+            Log.e(TAG, "Could not start USB camera stream", error)
+            statusLabel.text = "Не удалось открыть USB-канал: ${error.localizedMessage}"
         }
-        val activePublisher = H264Publisher(
+    }
+
+    private fun startWifiStream() {
+        val host = computerAddress.text.toString().trim().ifEmpty { null }
+        if (host != null) {
+            try {
+                InetAddress.getByName(host)
+            } catch (error: Exception) {
+                statusLabel.text = "Введите IP-адрес компьютера в локальной сети"
+                return
+            }
+        }
+        lateinit var activePublisher: H264Publisher
+        activePublisher = H264Publisher(
             host,
             onStatus = { status, isError ->
                 runOnUiThread {
-                    statusLabel.text = status
-                    if (isError) {
-                        publisher = null
-                        streamButton.text = "Начать трансляцию"
-                        streamButton.isEnabled = cameraReady
+                    if (publisher === activePublisher) {
+                        statusLabel.text = status
+                        if (isError) {
+                            publisher = null
+                            updateStreamingState()
+                        }
                     }
                 }
             },
@@ -748,18 +803,12 @@ class MainActivity : ComponentActivity() {
             },
         )
         publisher = activePublisher
-        streamButton.text = "Остановить трансляцию"
-        statusLabel.text = "Подключение к $host:8765…"
-        streamInfo.text =
-            "Без кода доступа. Используйте только доверенную локальную сеть.\n" +
-                "Убедитесь, что LumaLink Studio ожидает подключение на этом компьютере."
         try {
             activePublisher.start()
         } catch (error: Exception) {
             Log.e(TAG, "Could not start camera publisher", error)
             activePublisher.stop()
             publisher = null
-            streamButton.text = "Начать трансляцию"
             statusLabel.text = "Не удалось начать трансляцию: ${error.localizedMessage}"
         }
     }

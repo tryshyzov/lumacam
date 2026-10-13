@@ -34,7 +34,13 @@ python -m PyInstaller --noconfirm --clean LumaLinkStudio.spec
 
 The executable is written to `dist\LumaLinkStudio.exe`. The fetch script downloads ADB, which the executable bundles for the VPN fallback (see [`vendor/README.md`](./vendor/README.md)).
 
-Every push and pull request is also built by GitHub Actions ([`.github/workflows/build.yml`](./.github/workflows/build.yml)): it runs the tests and uploads the desktop executable, the installer, and the debug APK as artifacts. These builds are unsigned until a signing step is added.
+Every push and pull request is also built by GitHub Actions ([`.github/workflows/build.yml`](./.github/workflows/build.yml)): it runs the tests and uploads the desktop executable, the installer, and the APK as artifacts. The Windows binaries are unsigned until a signing step is added.
+
+### Releases
+
+Pushing a tag such as `v0.2.0` builds everything with that version and publishes a GitHub release with the executable, the installer, and the APK.
+
+The APK is signed with a project key so that a new version installs over the previous one. The key is not in the repository; CI reads it from two repository secrets, `ANDROID_KEYSTORE_BASE64` (the keystore file, Base64-encoded, key alias `lumalink`) and `ANDROID_KEYSTORE_PASSWORD`. Without them, ordinary builds produce a debug APK and a tagged release fails. Keep a backup of the keystore: if it is lost, users must uninstall the app before installing a build signed with a new key.
 
 ## Build a Windows installer
 
@@ -64,10 +70,10 @@ adb shell am start -n com.lumalink.companion/.MainActivity
 ```
 
 1. Keep the phone connected and open **LumaLink Companion**.
-2. For **USB**, connect the cable and enable **USB tethering** (USB-модем) in the phone's hotspot settings. Leave the phone address empty, tap **Начать трансляцию**, then select USB in LumaLink Studio and click **Подключить камеру**. The desktop broadcasts a discovery probe (UDP 8766) on its network adapters, the phone answers only on its USB-tethering interface, and the desktop opens the stream to the phone on TCP 8765. While tethering is on, Windows may route internet traffic through the phone's mobile data.
+2. For **USB**, connect the cable and enable **USB tethering** (USB-модем) in the phone's hotspot settings. Select **USB** in the phone app, tap **Начать трансляцию**, then select USB in LumaLink Studio and click **Подключить камеру**. The desktop broadcasts a discovery probe (UDP 8766) on its network adapters, the phone answers only on its USB-tethering interface, and the desktop opens the stream to the phone on TCP 8765. While tethering is on, Windows may route internet traffic through the phone's mobile data.
 
    **VPN fallback.** A VPN with a kill switch (for example a full-tunnel WireGuard client) blocks all traffic to the phone, IPv4 and IPv6, on every adapter, so neither tethering nor Wi-Fi can work and the block cannot be bypassed from an application. If the phone is not found within 3 seconds, the desktop falls back to `adb forward`, which reaches the same phone listener over USB and loopback and is not affected by the VPN. This path needs **USB debugging** enabled on the phone; `adb.exe` is bundled with the desktop app (see [`vendor/README.md`](./vendor/README.md)). Wi-Fi mode has no such fallback. When the desktop detects such a block, it says so in the connection hint and suggests adding LumaLink Studio to the VPN's split-tunnelling exceptions.
-3. For **Wi-Fi**, in LumaLink Studio select Wi-Fi and note the displayed computer IP. Click **Подключить камеру** in LumaLink Studio first so it starts listening, then enter that IP in the phone app and tap **Начать трансляцию** (the phone makes a single connection attempt and does not retry). Both devices must be on the same trusted network; Windows Firewall may ask to allow the desktop app on private networks.
+3. For **Wi-Fi**, select Wi-Fi in LumaLink Studio and click **Подключить камеру** so it starts listening. Then select **Wi-Fi** in the phone app and tap **Начать трансляцию**: the phone broadcasts a discovery probe (UDP 8767), LumaLink Studio answers, and the phone connects to it on TCP 8765. If the computer is not found, type the IP shown in LumaLink Studio into the phone app. Both devices must be on the same trusted network; Windows Firewall may ask to allow the desktop app on private networks.
 4. Stop the stream from either app when finished. There is no access code or encryption: any device that can reach the desktop on port 8765 can view the camera stream. Use Wi-Fi only on a trusted private network and stop streaming when not needed.
 
 The desktop preview and live Android camera stream use length-prefixed H.264 access units over USB tethering or Wi-Fi. Android encodes with MediaCodec; Windows decodes with PyAV and corrects the stream's 180-degree orientation before displaying or forwarding frames. Each access unit is acknowledged before the next is sent, and the transport keeps only the latest pending access unit to limit queue latency. The desktop can request 480p, 720p, or 1080p analysis output and change focus/auto-focus, exposure, ISO, white balance, front/rear camera, zoom, and target FPS. The Android app applies supported controls via Camera2 and clamps unsupported settings to the device's reported capability ranges; actual stream resolution and cadence can be lower than requested on devices with limited camera modes or processing performance.
