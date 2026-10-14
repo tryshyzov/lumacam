@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body { margin: 0; font-size: 14px; } img { max-width: 100%; } [hidden] { display: none !important; }</style>
+<title>Макет LumaLink Companion</title>
+<style>
+/* Layout: one phone screen in the desktop app's language — gray top bar, camera picture on black, gray control sheet at the bottom. Review notes beside it. */
+:root {
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Primitives: the neutral ramp of the desktop window. */
+  --gray-0: #000000;
+  --gray-150: #1c1c1c;
+  --gray-250: #2b2b2b;
+  --gray-350: #3d3d3d;
+  --gray-500: #575757;
+  --gray-550: #626262;
+  --gray-650: #757575;
+  --gray-800: #b8b8b8;
+  --gray-900: #e0e0e0;
+  --gray-1000: #ffffff;
+
+  /* Semantic */
+  --color-bg-page: var(--gray-150);
+  --color-bg-chrome: var(--gray-550);
+  --color-bg-frame: var(--gray-350);
+  --color-bg-letterbox: var(--gray-0);
+  --color-bg-sheet: var(--gray-350);
+  --color-bg-solid: var(--gray-1000);
+  --color-bg-scrim: rgba(0, 0, 0, 0.5);
+  --color-text-primary: var(--gray-1000);
+  --color-text-secondary: var(--gray-900);
+  --color-text-on-solid: var(--gray-250);
+  --color-border-subtle: var(--gray-650);
+  --color-border-control: var(--gray-800);
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --radius-control: 6px;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+}
+body {
+  background: var(--color-bg-page);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  padding-inline: 16px;
+  padding-block: 24px 48px;
+}
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--color-text-primary); outline-offset: 2px; }
+
+.layout { max-width: 1040px; margin-inline: auto; display: flex; flex-wrap: wrap; gap: 32px 48px; align-items: flex-start; justify-content: center; }
+.notes { flex: 1 1 320px; min-width: 0; max-width: 62ch; display: grid; gap: 24px; }
+.notes h1 { margin: 0; font-size: 1.375rem; font-weight: 600; line-height: 1.2; text-wrap: balance; }
+.notes h2 { margin: 0 0 8px; font-size: 1rem; font-weight: 600; line-height: 1.3; }
+.notes p { margin: 0; color: var(--color-text-secondary); text-wrap: pretty; }
+.notes ul { margin: 0; padding-inline-start: 18px; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 6px; }
+.notes b { color: var(--color-text-primary); font-weight: 600; }
+
+/* Phone */
+.phone {
+  position: relative; flex: 0 0 auto; width: min(360px, 100%); aspect-ratio: 360 / 760;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--color-bg-letterbox); border-radius: 28px; overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0 9px #0a0a0a, 0 0 0 10px rgba(255, 255, 255, 0.08), 0 30px 70px rgba(0, 0, 0, 0.6);
+}
+
+.topbar { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 2px 2px 2px 12px; background: var(--color-bg-chrome); }
+.status { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 0.75rem; }
+.status svg { flex: none; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
+.status span { min-width: 0; overflow-wrap: anywhere; }
+.icon-btn { flex: none; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; background: none; border: 0; border-radius: var(--radius-control);
+  transition-property: background-color, scale; transition-duration: 150ms; transition-timing-function: ease-out; }
+.icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+.stage { position: relative; min-height: 0; display: grid; place-items: center; overflow: hidden; background: var(--color-bg-letterbox); }
+.picture { position: absolute; inset: 0; background: radial-gradient(circle at 34% 30%, var(--gray-500), var(--gray-350) 74%); transition-property: scale; transition-duration: 200ms; transition-timing-function: var(--ease-out); }
+.spot { position: absolute; inset-inline-start: 12%; inset-block-start: 10%; width: 44%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, var(--gray-800), transparent 68%); opacity: 0.55; }
+.lens-tag { position: absolute; inset-inline-start: 8px; inset-block-end: 8px; padding: 2px 7px; border-radius: 5px; background: var(--color-bg-scrim); font-size: 0.75rem; }
+
+.sheet { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 10px; background: var(--color-bg-chrome); }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 2px; border: 1px solid var(--color-border-control); border-radius: var(--radius-control); }
+.seg button { min-height: 28px; padding: 0 6px; font-size: 0.8125rem; background: none; border: 0; border-radius: 5px; white-space: nowrap;
+  transition-property: background-color, color; transition-duration: 150ms; transition-timing-function: ease-out; }
+.seg button[aria-checked="true"] { background: var(--color-bg-solid); color: var(--color-text-on-solid); font-weight: 600; }
+.seg[data-disabled="true"] { opacity: 0.45; pointer-events: none; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 0.75rem; }
+.field input { min-height: 34px; padding: 0 10px; background: none; border: 1px solid var(--color-border-control); border-radius: var(--radius-control); font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+.field input::placeholder { color: var(--color-text-secondary); opacity: 0.75; }
+.action { min-height: 36px; padding: 0 14px; font-size: 0.8125rem; border: 1px solid transparent; border-radius: var(--radius-control); background: var(--color-bg-solid); color: var(--color-text-on-solid); font-weight: 600;
+  transition-property: background-color, scale; transition-duration: 150ms; transition-timing-function: ease-out; }
+.action[data-kind="quiet"] { background: none; border-color: var(--color-border-control); color: var(--color-text-primary); }
+.hint { margin: 0; font-size: 0.75rem; line-height: 1.4; color: var(--color-text-secondary); text-wrap: pretty; }
+.link-row { display: flex; justify-content: center; }
+.text-btn { min-height: 30px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; font-size: 0.8125rem; background: none; border: 0; border-radius: var(--radius-control); }
+.text-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Settings sheet */
+.scrim { position: absolute; inset: 0; z-index: 2; display: flex; align-items: flex-end; background: var(--color-bg-scrim); }
+.settings { width: 100%; max-height: 80%; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 14px; padding: 14px 12px 14px;
+  background: var(--color-bg-sheet); border-radius: 16px 16px 0 0; box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.1); }
+.settings-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings h2 { margin: 0; font-size: 0.9375rem; font-weight: 600; line-height: 1.3; }
+.group { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.group-title { padding: 0; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-secondary); }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; font-size: 0.8125rem; }
+.switch { position: relative; flex: none; width: 36px; height: 20px; padding: 0; background: none; border: 1px solid var(--color-border-control); border-radius: 10px;
+  transition-property: background-color, border-color; transition-duration: 150ms; transition-timing-function: ease-out; }
+.switch::after { content: ""; position: absolute; inset-block-start: 3px; inset-inline-start: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--color-border-control);
+  transition-property: translate, background-color; transition-duration: 150ms; transition-timing-function: ease-out; }
+.switch[aria-checked="true"] { background: var(--color-bg-solid); border-color: var(--color-bg-solid); }
+.switch[aria-checked="true"]::after { translate: 16px 0; background: var(--color-text-on-solid); }
+.about { margin: 0; font-size: 0.75rem; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+
+@keyframes drift {
+  0% { translate: 0 0; }
+  35% { translate: 90% 60%; }
+  70% { translate: 20% 130%; }
+  100% { translate: 0 0; }
+}
+@media (hover: hover) {
+  .icon-btn:hover, .text-btn:hover { background-color: rgba(255, 255, 255, 0.08); }
+  .action:hover { background-color: var(--gray-900); }
+  .action[data-kind="quiet"]:hover { background-color: rgba(255, 255, 255, 0.08); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .icon-btn:active, .action:active { scale: 0.96; }
+  .spot { animation: drift 14s ease-in-out infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .picture, .switch::after { transition-property: none; }
+}
+</style>
+
+<div class="layout">
+  <div class="phone" id="phone" lang="ru">
+    <header class="topbar">
+      <div class="status" role="status">
+        <svg viewBox="0 0 14 14" aria-hidden="true" id="statusIcon"></svg>
+        <span id="statusText"></span>
+      </div>
+      <button class="icon-btn" id="settingsBtn" type="button" aria-haspopup="dialog" aria-expanded="false" data-t-label="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      </button>
+    </header>
+
+    <main class="stage">
+      <div class="picture" id="picture"><div class="spot"></div></div>
+      <div class="lens-tag" id="lensTag"></div>
+    </main>
+
+    <section class="sheet">
+      <div class="seg" role="radiogroup" id="modeSeg" data-t-label="modeLabel" data-disabled="false">
+        <button type="button" role="radio" aria-checked="true" data-value="USB">USB</button>
+        <button type="button" role="radio" aria-checked="false" data-value="Wi-Fi">Wi-Fi</button>
+      </div>
+      <div class="field" id="hostField" hidden>
+        <label for="host" data-t="hostLabel"></label>
+        <input id="host" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.20">
+      </div>
+      <button class="action" id="streamBtn" type="button"></button>
+      <p class="hint" id="hint"></p>
+      <div class="link-row">
+        <button class="text-btn" id="lensBtn" type="button">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6.5A5.6 5.6 0 0 1 13 5M13.5 9.5A5.6 5.6 0 0 1 3 11"></path><path d="M13.2 2v3.2H10M2.8 14v-3.2H6"></path></svg>
+          <span data-t="switchLens"></span>
+        </button>
+      </div>
+    </section>
+
+    <div class="scrim" id="scrim" hidden>
+      <div class="settings" role="dialog" aria-labelledby="settingsTitle">
+        <div class="settings-head">
+          <h2 id="settingsTitle" data-t="settings"></h2>
+          <button class="icon-btn" id="closeSettings" type="button" data-t-label="close">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3 3 13"></path></svg>
+          </button>
+        </div>
+        <fieldset class="group">
+          <legend class="group-title" data-t="language"></legend>
+          <div class="seg" role="radiogroup" id="langSeg" data-t-label="language">
+            <button type="button" role="radio" aria-checked="true" data-value="ru" lang="ru">Русский</button>
+            <button type="button" role="radio" aria-checked="false" data-value="en" lang="en">English</button>
+          </div>
+        </fieldset>
+        <fieldset class="group">
+          <legend class="group-title" data-t="screen"></legend>
+          <div class="row"><span id="awakeLabel" data-t="keepAwake"></span><button class="switch" id="awake" type="button" role="switch" aria-checked="true" aria-labelledby="awakeLabel"></button></div>
+        </fieldset>
+        <p class="about">LumaLink Companion 0.2.0</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h1>Экран телефона в стиле окна на компьютере</h1>
+    <p>Вторая версия: всё уменьшено, кадр камеры занимает больше места. Макет нажимается: переключите USB и Wi-Fi, начните трансляцию, смените камеру, откройте настройки и поменяйте язык.</p>
+    <div>
+      <h2>Что перенесено с компьютера</h2>
+      <ul>
+        <li>Те же серые цвета: панели #626262, кадр #3d3d3d, чёрные поля.</li>
+        <li>Те же элементы: контурные сегменты с белым выбранным вариантом, белая главная кнопка, шестерёнка, строка состояния со значком.</li>
+        <li>Настройки с выбором языка, как на компьютере.</li>
+      </ul>
+    </div>
+    <div>
+      <h2>Что сделано под телефон</h2>
+      <ul>
+        <li>Элементы уменьшены по вашей просьбе: кнопки 36 px, сегменты 28 px. Это меньше рекомендованных для пальца 48 px.</li>
+        <li>Управление собрано внизу, под большим пальцем; состояние и настройки — вверху.</li>
+        <li>Настройки выезжают листом снизу, а не выпадают из шестерёнки.</li>
+        <li>Фокус, экспозиция, зум и разрешение остаются на компьютере: на телефоне их нет и сейчас.</li>
+      </ul>
+    </div>
+    <div>
+      <h2>Что нужно решить вам</h2>
+      <ul>
+        <li>Нужна ли на телефоне своя кнопка паузы, или пауза только с компьютера?</li>
+        <li>Оставить переключатель «Не гасить экран» в настройках или экран всегда должен гореть во время трансляции, как сейчас?</li>
+        <li>Нужен ли вверху логотип и название приложения? Сейчас там только состояние, как в окне на компьютере, где заголовок пустой.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const T = {
+  ru: {
+    settings: "Настройки", close: "Закрыть", language: "Язык", screen: "Экран", keepAwake: "Не гасить экран во время трансляции",
+    modeLabel: "Способ подключения", hostLabel: "IP компьютера (необязательно)", switchLens: "Сменить камеру",
+    start: "Начать трансляцию", stop: "Остановить трансляцию",
+    ready: "Камера готова", waitUsb: "Ждём компьютер по USB", waitWifi: "Ищем компьютер в сети Wi-Fi…", live: "Компьютер подключён по ",
+    hintUsb: "Включите «USB-модем» в настройках телефона, затем в LumaLink Studio выберите USB и нажмите «Подключить камеру».",
+    hintWifi: "В LumaLink Studio выберите Wi-Fi и нажмите «Подключить камеру». Компьютер найдётся сам; если нет, введите его IP.",
+    hintLive: "Трансляция идёт. Управлять фокусом, зумом и качеством можно с компьютера.",
+    rear: "Задняя камера", front: "Фронтальная камера",
+  },
+  en: {
+    settings: "Settings", close: "Close", language: "Language", screen: "Screen", keepAwake: "Keep the screen on while streaming",
+    modeLabel: "Connection type", hostLabel: "Computer IP (optional)", switchLens: "Switch camera",
+    start: "Start streaming", stop: "Stop streaming",
+    ready: "Camera ready", waitUsb: "Waiting for the computer over USB", waitWifi: "Looking for the computer on Wi-Fi…", live: "Computer connected over ",
+    hintUsb: "Turn on USB tethering in the phone settings, then select USB in LumaLink Studio and choose Connect camera.",
+    hintWifi: "Select Wi-Fi in LumaLink Studio and choose Connect camera. The computer is found automatically; if not, enter its IP.",
+    hintLive: "Streaming. Focus, zoom and quality are controlled from the computer.",
+    rear: "Rear camera", front: "Front camera",
+  },
+};
+const ICON_OK = '<circle cx="7" cy="7" r="6"></circle><path d="M4.2 7.2 6.2 9.2 9.9 5"></path>';
+const ICON_WAIT = '<circle cx="7" cy="7" r="6"></circle><path d="M7 3.8V7l2.2 1.4"></path>';
+const ICON_IDLE = '<circle cx="7" cy="7" r="6"></circle><circle cx="7" cy="7" r="2"></circle>';
+const state = { lang: "ru", mode: "USB", phase: "idle", lens: "rear" };
+const t = (key) => T[state.lang][key];
+
+function markSeg(el, value) {
+  for (const button of el.children) button.setAttribute("aria-checked", String(button.dataset.value === value));
+}
+function bindSeg(el, key) {
+  el.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    state[key] = button.dataset.value;
+    render();
+  });
+}
+
+function render() {
+  $("phone").lang = state.lang;
+  for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+  for (const el of document.querySelectorAll("[data-t-label]")) el.setAttribute("aria-label", t(el.dataset.tLabel));
+  markSeg($("modeSeg"), state.mode);
+  markSeg($("langSeg"), state.lang);
+
+  const streaming = state.phase !== "idle";
+  const live = state.phase === "live";
+  $("statusIcon").innerHTML = live ? ICON_OK : streaming ? ICON_WAIT : ICON_IDLE;
+  $("statusText").textContent = live
+    ? t("live") + state.mode
+    : streaming ? t(state.mode === "USB" ? "waitUsb" : "waitWifi") : t("ready");
+  $("streamBtn").textContent = t(streaming ? "stop" : "start");
+  $("streamBtn").dataset.kind = streaming ? "quiet" : "solid";
+  $("modeSeg").dataset.disabled = String(streaming);
+  $("hostField").hidden = state.mode !== "Wi-Fi" || streaming;
+  $("hint").textContent = live ? t("hintLive") : t(state.mode === "USB" ? "hintUsb" : "hintWifi");
+  $("lensTag").textContent = t(state.lens);
+  $("picture").style.scale = state.lens === "front" ? "-1 1" : "1 1";
+}
+
+bindSeg($("modeSeg"), "mode");
+bindSeg($("langSeg"), "lang");
+let timer = 0;
+$("streamBtn").addEventListener("click", () => {
+  clearTimeout(timer);
+  if (state.phase === "idle") {
+    state.phase = "waiting";
+    timer = setTimeout(() => { state.phase = "live"; render(); }, 1600);
+  } else {
+    state.phase = "idle";
+  }
+  render();
+});
+$("lensBtn").addEventListener("click", () => { state.lens = state.lens === "rear" ? "front" : "rear"; render(); });
+$("awake").addEventListener("click", () => {
+  $("awake").setAttribute("aria-checked", String($("awake").getAttribute("aria-checked") !== "true"));
+});
+
+function setSettings(open) {
+  $("scrim").hidden = !open;
+  $("settingsBtn").setAttribute("aria-expanded", String(open));
+  if (open) $("langSeg").querySelector('[aria-checked="true"]').focus();
+  else $("settingsBtn").focus();
+}
+$("settingsBtn").addEventListener("click", () => setSettings(true));
+$("closeSettings").addEventListener("click", () => setSettings(false));
+$("scrim").addEventListener("click", (event) => { if (event.target === $("scrim")) setSettings(false); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("scrim").hidden) setSettings(false); });
+render();
+
+// Start state from the address, e.g. lumalink-companion.html#live,en
+// Tokens: waiting, live, wifi, front, en, settings.
+(() => {
+  const want = new Set(location.hash.slice(1).split(",").filter(Boolean));
+  if (want.has("waiting")) state.phase = "waiting";
+  if (want.has("live")) state.phase = "live";
+  if (want.has("wifi")) state.mode = "Wi-Fi";
+  if (want.has("front")) state.lens = "front";
+  if (want.has("en")) state.lang = "en";
+  render();
+  if (want.has("settings")) $("settingsBtn").click();
+})();
+</script>
+
+<style>.intro, .report, .notes { display: none !important; } body { margin: 0; }</style>
