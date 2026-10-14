@@ -61,7 +61,7 @@ python3 -m pip install -r requirements.txt pyinstaller
 scripts/build-macos.sh
 ```
 
-It writes `dist/LumaLink Studio.app` and `dist/LumaLinkStudio-<version>-macos.dmg`. The app is signed ad hoc, not with a Developer ID, so on another Mac open it the first time with right-click → **Open**. On first launch macOS asks to let it find devices on local networks; allow it, or the phone cannot connect. The LumaLink Camera virtual camera is Windows-only for now: on macOS the virtual camera goes through OBS Virtual Camera (OBS Studio 30+, started once from OBS).
+It writes `dist/LumaLink Studio.app` and `dist/LumaLinkStudio-<version>-macos.dmg`. With Xcode installed, the script also compiles `assets/LumaLinkStudio.icon` (an Icon Composer icon) so the icon follows the macOS light, dark, tinted and clear appearances; without it the app keeps the plain `.icns` icon. The app is signed ad hoc, not with a Developer ID, so on another Mac open it the first time with right-click → **Open**. On first launch macOS asks to let it find devices on local networks; allow it, or the phone cannot connect. The LumaLink Camera virtual camera is Windows-only for now: on macOS the virtual camera goes through OBS Virtual Camera (OBS Studio 30+, started once from OBS).
 
 ## Connect the Android camera
 

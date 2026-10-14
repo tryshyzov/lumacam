@@ -1,5 +1,9 @@
 """Draws assets/LumaLinkStudio.icns, the macOS app icon, from LumaCam.svg.
 
+macOS 26 and later show the adaptive icon compiled from
+assets/LumaLinkStudio.icon instead; this one is for earlier macOS and for
+builds without Xcode.
+
 macOS puts icons that do not follow its grid on a gray plate, so the logo
 goes on the macOS icon shape: an 824 px rounded square with continuous
 corners, centered on a 1024 px canvas, over a soft shadow. Needs macOS

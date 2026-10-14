@@ -53,6 +53,9 @@ app = BUNDLE(
     version=__version__,
     info_plist={
         'CFBundleDisplayName': 'LumaLink Studio',
+        # The adaptive icon in Assets.car (scripts/build-macos.sh compiles it
+        # from assets/LumaLinkStudio.icon); macOS before 26 uses the .icns.
+        'CFBundleIconName': 'LumaLinkStudio',
         'CFBundleShortVersionString': __version__,
         'CFBundleVersion': __version__,
         'LSMinimumSystemVersion': '13.0',

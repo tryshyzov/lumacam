@@ -1,0 +1,68 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.18824,0.18824,0.18824,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "dot.svg",
+          "name" : "Record light"
+        },
+        {
+          "glass" : true,
+          "image-name" : "bezel.svg",
+          "name" : "Record bezel"
+        }
+      ],
+      "name" : "Record",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.4
+      }
+    },
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "pupil.svg",
+          "name" : "Pupil"
+        },
+        {
+          "glass" : true,
+          "image-name" : "iris.svg",
+          "name" : "Iris"
+        },
+        {
+          "glass" : true,
+          "image-name" : "lens.svg",
+          "name" : "Lens"
+        },
+        {
+          "glass" : true,
+          "image-name" : "body.svg",
+          "name" : "Lens ring"
+        }
+      ],
+      "name" : "Lens",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.4
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
