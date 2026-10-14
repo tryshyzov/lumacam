@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from PIL import Image
 from PySide6.QtCore import (
     QByteArray,
@@ -50,7 +53,9 @@ BORDER_SUBTLE = "#757575"
 BORDER_CONTROL = "#b8b8b8"
 MENU = "#3d3d3d"
 MENU_HOVER = "#575757"
-FONT_FAMILY = "Segoe UI"
+# macOS draws its own window buttons; Windows gets the prototype's ones.
+MACOS = sys.platform == "darwin"
+FONT_FAMILY = ".AppleSystemUIFont" if MACOS else "Segoe UI"
 
 ICON_PAUSE = (
     '<rect x="1" y="0.5" width="4.5" height="13" rx="1"/>'
@@ -332,7 +337,9 @@ def _to_qimage(image: Image.Image) -> tuple[QImage, bytes]:
 
 
 def animations_enabled() -> bool:
-    """Whether Windows is set to show animations (an accessibility setting)."""
+    """Whether the system is set to show animations (an accessibility setting)."""
+    if MACOS:
+        return not _macos_reduce_motion()
     try:
         import ctypes
 
@@ -344,6 +351,20 @@ def animations_enabled() -> bool:
         return bool(enabled.value)
     except (AttributeError, OSError):
         return True
+
+
+def _macos_reduce_motion() -> bool:
+    """System Settings → Accessibility → Display → Reduce motion."""
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "com.apple.universalaccess", "reduceMotion"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.stdout.strip() == "1"
 
 
 class Preview(QWidget):

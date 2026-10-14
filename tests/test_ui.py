@@ -142,6 +142,22 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(window.preview.has_image())
         self.assertEqual(FakeVirtualCamera.instances, [])
 
+    def test_window_buttons_follow_the_platform(self) -> None:
+        for macos in (False, True):
+            with self.subTest(macos=macos), mock.patch.object(ui, "MACOS", macos):
+                window = self.new_window()
+                self.addCleanup(window.close)
+                flags = window.windowFlags()
+
+                # macOS draws its own buttons over the title bar; Windows gets ours.
+                self.assertEqual(window.maximize_button is None, macos)
+                self.assertEqual(
+                    bool(flags & ui.Qt.WindowType.FramelessWindowHint), not macos
+                )
+                self.assertEqual(
+                    bool(flags & ui.Qt.WindowType.ExpandedClientAreaHint), macos
+                )
+
     def test_first_frame_connects_and_starts_the_virtual_camera(self) -> None:
         receiver = self.connect_phone()
         self.window._poll_stream()
