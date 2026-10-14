@@ -28,3 +28,6 @@ vendor/platform-tools/
 
 # Built by msbuild from virtualcam/
 virtualcam/Build/
+
+# Personal design mockups (for Figma), kept out of the repository
+design/
