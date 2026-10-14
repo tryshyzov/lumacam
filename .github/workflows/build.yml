@@ -28,6 +28,16 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
+      # The version shown in Settings comes from the tag, like the installer's.
+      - name: Stamp version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          (Get-Content camera_studio/__init__.py) -replace '__version__ = ".*"', "__version__ = `"$version`"" |
+            Set-Content camera_studio/__init__.py
+          Select-String -Path camera_studio/__init__.py -Pattern '__version__'
+
       - name: Fetch ADB
         shell: pwsh
         run: ./scripts/fetch-platform-tools.ps1
