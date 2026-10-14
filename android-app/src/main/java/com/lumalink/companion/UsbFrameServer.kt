@@ -26,7 +26,7 @@ import kotlin.concurrent.thread
  * Any other peer is rejected.
  */
 internal class UsbFrameServer(
-    private val onStatus: (String) -> Unit,
+    private val onStatus: LinkListener,
     private val onControl: (JSONObject) -> Unit,
 ) {
     private val frameLock = Object()
@@ -75,7 +75,7 @@ internal class UsbFrameServer(
             } catch (error: Exception) {
                 if (running) {
                     Log.e(TAG, "USB camera listener failed", error)
-                    onStatus("Ошибка USB-подключения: ${error.localizedMessage}")
+                    onStatus(LinkEvent.FAILED, error.localizedMessage)
                     stop()
                 }
             }
@@ -83,7 +83,7 @@ internal class UsbFrameServer(
         thread(name = "LumaLink USB discovery", isDaemon = true) {
             answerDiscovery(responder)
         }
-        onStatus(waitingStatus(usbTetherInterfaces().isNotEmpty()))
+        reportWaiting(usbTetherInterfaces().isNotEmpty())
     }
 
     fun publishFrame(frame: ByteArray) {
@@ -118,7 +118,7 @@ internal class UsbFrameServer(
         synchronized(frameLock) {
             frameLock.notifyAll()
         }
-        onStatus("USB-трансляция остановлена")
+        onStatus(LinkEvent.STOPPED, null)
     }
 
     private fun answerDiscovery(responder: DatagramSocket) {
@@ -142,7 +142,7 @@ internal class UsbFrameServer(
             } catch (_: SocketTimeoutException) {
                 val active = usbTetherInterfaces().isNotEmpty()
                 if (active != tetherActive && running && clients.isEmpty()) {
-                    onStatus(waitingStatus(active))
+                    reportWaiting(active)
                 }
                 tetherActive = active
             } catch (error: Exception) {
@@ -152,13 +152,9 @@ internal class UsbFrameServer(
         }
     }
 
-    private fun waitingStatus(tetherActive: Boolean): String =
-        if (tetherActive) {
-            "USB-модем включён · ожидаем компьютер"
-        } else {
-            "Включите «USB-модем» (Точка доступа и модем). " +
-                "Если на компьютере VPN — включите «Отладку по USB»"
-        }
+    private fun reportWaiting(tetherActive: Boolean) {
+        onStatus(if (tetherActive) LinkEvent.WAITING else LinkEvent.NEED_TETHERING, null)
+    }
 
     private fun usbTetherInterfaces(): List<NetworkInterface> =
         try {
@@ -202,7 +198,7 @@ internal class UsbFrameServer(
 
                 val output = DataOutputStream(socket.getOutputStream())
                 connected = true
-                onStatus("Компьютер подключён по USB")
+                onStatus(LinkEvent.CONNECTED, null)
                 var sentFrame: ByteArray? = null
                 while (running && !socket.isClosed) {
                     val frame = synchronized(frameLock) {
@@ -234,7 +230,7 @@ internal class UsbFrameServer(
             } finally {
                 clients.remove(client)
                 if (connected && running) {
-                    onStatus(waitingStatus(usbTetherInterfaces().isNotEmpty()))
+                    reportWaiting(usbTetherInterfaces().isNotEmpty())
                 }
             }
         }

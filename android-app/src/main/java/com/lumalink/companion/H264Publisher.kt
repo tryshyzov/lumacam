@@ -23,7 +23,7 @@ import org.json.JSONObject
  */
 internal class H264Publisher(
     private val requestedHost: String?,
-    private val onStatus: (String, Boolean) -> Unit,
+    private val onStatus: LinkListener,
     private val onControl: (JSONObject) -> Unit,
 ) {
     private val frameLock = Object()
@@ -63,7 +63,7 @@ internal class H264Publisher(
         var host = requestedHost ?: "?"
         try {
             host = requestedHost ?: discoverComputer()
-            onStatus("Подключение к $host:$PORT…", false)
+            onStatus(LinkEvent.CONNECTING, host)
             val connection = Socket()
             socket = connection
             connection.connect(InetSocketAddress(host, PORT), CONNECT_TIMEOUT_MS)
@@ -105,7 +105,7 @@ internal class H264Publisher(
             }
 
             connection.soTimeout = 0
-            onStatus("Подключено к компьютеру · трансляция активна", false)
+            onStatus(LinkEvent.CONNECTED, null)
             var sentFrame: ByteArray? = null
             while (running.get() && !connection.isClosed) {
                 val frame = synchronized(frameLock) {
@@ -133,13 +133,12 @@ internal class H264Publisher(
                 }
                 sentFrame = frame
             }
+        } catch (error: ComputerNotFoundException) {
+            if (running.get()) onStatus(LinkEvent.NOT_FOUND, null)
         } catch (error: Exception) {
             if (running.get()) {
                 Log.e(TAG, "Camera stream connection failed for $host:$PORT", error)
-                onStatus(
-                    "Ошибка подключения: ${error.localizedMessage ?: "соединение закрыто"}",
-                    true,
-                )
+                onStatus(LinkEvent.FAILED, error.localizedMessage)
             }
         } finally {
             running.set(false)
@@ -153,7 +152,7 @@ internal class H264Publisher(
     }
 
     private fun discoverComputer(): String {
-        onStatus("Ищем компьютер в сети Wi-Fi…", false)
+        onStatus(LinkEvent.SEARCHING, null)
         DatagramSocket().use { probe ->
             discoverySocket = probe
             probe.broadcast = true
@@ -189,10 +188,7 @@ internal class H264Publisher(
                 }
             }
         }
-        throw IllegalStateException(
-            "компьютер не найден. Нажмите «Подключить камеру» (Wi-Fi) в LumaLink Studio " +
-                "или введите IP компьютера вручную",
-        )
+        throw ComputerNotFoundException()
     }
 
     private fun broadcastAddresses(): Set<InetAddress> {
