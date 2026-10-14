@@ -1,7 +1,9 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 
+from camera_studio import camera_backend
 from camera_studio.camera_backend import VirtualCameraSession
 
 
@@ -20,6 +22,11 @@ class FakeBackend:
 
 
 class VirtualCameraSessionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(camera_backend, "MACOS", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_prefers_obs_virtual_camera(self) -> None:
         calls: list[str] = []
         camera = FakeBackend()
@@ -66,6 +73,28 @@ class VirtualCameraSessionTests(unittest.TestCase):
 
         self.assertIn("obs is unavailable", str(error.exception))
         self.assertIn("unitycapture is unavailable", str(error.exception))
+
+
+
+class MacVirtualCameraSessionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch.object(camera_backend, "MACOS", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_uses_only_obs(self) -> None:
+        calls: list[str] = []
+
+        def factory(**options: object) -> FakeBackend:
+            calls.append(str(options["backend"]))
+            raise RuntimeError("OBS Virtual Camera is not installed")
+
+        with self.assertRaisesRegex(RuntimeError, "macOS.*OBS Studio 30") as error:
+            VirtualCameraSession(factory).__enter__()
+
+        self.assertEqual(calls, ["obs"])
+        self.assertIn("OBS Virtual Camera is not installed", str(error.exception))
+        self.assertNotIn("Unity", str(error.exception))
 
 
 if __name__ == "__main__":
