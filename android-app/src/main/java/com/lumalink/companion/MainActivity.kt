@@ -2,11 +2,13 @@ package com.lumalink.companion
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.hardware.camera2.CaptureRequest
-import android.hardware.camera2.CameraCharacteristics
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.os.SystemClock
+import android.text.InputType
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -14,19 +16,17 @@ import android.view.Gravity
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
@@ -46,13 +46,27 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
-    private lateinit var statusLabel: TextView
-    private lateinit var lensButton: TextView
-    private lateinit var streamButton: Button
-    private lateinit var streamInfo: TextView
-    private lateinit var computerAddress: EditText
-    private lateinit var usbModeButton: RadioButton
-    private lateinit var wifiModeButton: RadioButton
+    private lateinit var topBar: LinearLayout
+    private lateinit var statusIcon: ImageView
+    private lateinit var statusText: TextView
+    private lateinit var settingsButton: ImageView
+    private lateinit var lensTag: TextView
+    private lateinit var sheet: LinearLayout
+    private lateinit var modeControl: SegmentedControl
+    private lateinit var hostField: LinearLayout
+    private lateinit var hostInput: EditText
+    private lateinit var streamButton: TextView
+    private lateinit var hintText: TextView
+    private lateinit var lensButton: LinearLayout
+    private lateinit var settingsOverlay: FrameLayout
+    private lateinit var settingsPanel: LinearLayout
+    private lateinit var languageControl: SegmentedControl
+    private lateinit var keepAwakeToggle: ToggleView
+    private lateinit var settingsBack: OnBackPressedCallback
+    private val translated = mutableListOf<Pair<(String) -> Unit, String>>()
+    private val preferences by lazy { getSharedPreferences(PREFERENCES, MODE_PRIVATE) }
+    private var language = "ru"
+
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null
     private var activeCamera: Camera? = null
@@ -66,17 +80,30 @@ class MainActivity : ComponentActivity() {
     private var lastEncodedFrameAt = 0L
     private var lastMeasuredFrameStartedAt = 0L
     private var measuredFrameCount = 0
+
+    /** A camera problem that keeps the phone from streaming at all. */
+    private var cameraProblem: String? = null
+
+    /** The last link event, or null while not streaming. */
+    private var linkState: LinkEvent? = null
+    private var linkDetail: String? = null
+
+    /** A passing message shown in place of the hint until the next state change. */
+    private var notice: String? = null
+
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
                 startCamera()
             } else {
-                statusLabel.text = "Разрешите доступ к камере в настройках приложения"
+                cameraProblem = t("cameraPermission")
+                render()
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
         buildScreen()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
@@ -97,212 +124,349 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun buildScreen() {
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.rgb(12, 14, 18))
+    private fun t(key: String, vararg values: Any?): String = Strings.get(language, key, *values)
+
+    private fun translate(key: String, setter: (String) -> Unit) {
+        translated += setter to key
+    }
+
+    // ---------------------------------------------------------------- layout
+
+    private fun label(sizeSp: Float, color: Int = Palette.TEXT, bold: Boolean = false): TextView =
+        TextView(this).apply {
+            textSize = sizeSp
+            setTextColor(color)
+            if (bold) typeface = semiBold()
         }
+
+    private fun iconButton(icon: Int, sizeDp: Int = 36): ImageView =
+        ImageView(this).apply {
+            setImageResource(icon)
+            scaleType = ImageView.ScaleType.CENTER
+            isClickable = true
+            isFocusable = true
+            background = pressable(rounded(Color.TRANSPARENT, dp(6).toFloat()), Palette.PRESS_ON_DARK)
+            minimumWidth = dp(sizeDp)
+            minimumHeight = dp(sizeDp)
+        }
+
+    private fun matchWidth(topMarginDp: Int = 0): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(topMarginDp) }
+
+    private fun buildScreen() {
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(
+            column,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
+
+        // Top bar: connection state on the left, settings on the right.
+        topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Palette.CHROME)
+            minimumHeight = dp(40)
+            setPadding(dp(12), dp(2), dp(2), dp(2))
+        }
+        statusIcon = ImageView(this)
+        topBar.addView(statusIcon, LinearLayout.LayoutParams(dp(12), dp(12)))
+        statusText = label(12f).apply { maxLines = 2 }
+        topBar.addView(
+            statusText,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) },
+        )
+        settingsButton = iconButton(R.drawable.ic_settings).apply { setOnClickListener { openSettings() } }
+        translate("settings") { settingsButton.contentDescription = it }
+        topBar.addView(settingsButton, LinearLayout.LayoutParams(dp(36), dp(36)))
+        column.addView(topBar, matchWidth())
+
+        // The camera picture on black, with the active lens in the corner.
+        val stage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
-        root.addView(
+        stage.addView(
             previewView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT,
-            ),
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
         )
-
-        val topPanel = FrameLayout(this).apply {
-            setBackgroundColor(Color.argb(205, 16, 18, 22))
-            setPadding(dp(20), dp(14), dp(20), dp(14))
+        lensTag = label(12f).apply {
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+            background = rounded(Palette.TAG, dp(5).toFloat())
         }
-        val brand = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val logo = ImageView(this).apply {
-            setImageResource(R.mipmap.ic_launcher)
-            contentDescription = "LumaLink"
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        brand.addView(
-            logo,
-            LinearLayout.LayoutParams(dp(36), dp(36)).apply {
-                marginEnd = dp(12)
-            },
-        )
-        val title = TextView(this).apply {
-            text = "LumaLink Companion"
-            setTextColor(Color.WHITE)
-            textSize = 18f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        brand.addView(title)
-        topPanel.addView(brand)
-        root.addView(
-            topPanel,
+        stage.addView(
+            lensTag,
             FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP,
-            ),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START,
+            ).apply { setMargins(dp(8), dp(8), dp(8), dp(8)) },
         )
+        column.addView(stage, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val bottomPanel = LinearLayout(this).apply {
+        // Control sheet under the thumb.
+        sheet = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(215, 16, 18, 22))
-            setPadding(dp(20), dp(14), dp(20), dp(14))
+            setBackgroundColor(Palette.CHROME)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        statusLabel = TextView(this).apply {
-            text = "Запуск камеры…"
-            setTextColor(Color.WHITE)
+        modeControl = SegmentedControl(this, listOf(MODE_USB, MODE_WIFI)).apply {
+            onChange = {
+                notice = null
+                linkState = null
+                render()
+            }
+        }
+        translate("modeLabel") { modeControl.contentDescription = it }
+        sheet.addView(modeControl, matchWidth())
+
+        hostField = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val hostLabel = label(12f)
+        translate("hostLabel") { hostLabel.text = it }
+        hostField.addView(hostLabel, matchWidth())
+        hostInput = EditText(this).apply {
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = "192.168.1.20"
             textSize = 14f
+            setTextColor(Palette.TEXT)
+            setHintTextColor(Palette.BORDER_CONTROL)
+            minHeight = dp(34)
+            setPadding(dp(10), 0, dp(10), 0)
+            background = rounded(Color.TRANSPARENT, dp(6).toFloat(), Palette.BORDER_CONTROL, dp(1))
         }
-        bottomPanel.addView(
-            statusLabel,
+        translate("hostLabel") { hostInput.contentDescription = it }
+        hostField.addView(hostInput, matchWidth(4))
+        sheet.addView(hostField, matchWidth(8))
+
+        streamButton = label(13f, bold = true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(36)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { toggleStreaming() }
+        }
+        sheet.addView(streamButton, matchWidth(8))
+
+        hintText = label(12f, Palette.TEXT_SECONDARY).apply { setLineSpacing(0f, 1.15f) }
+        sheet.addView(hintText, matchWidth(8))
+
+        lensButton = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            minimumHeight = dp(30)
+            setPadding(dp(10), 0, dp(10), 0)
+            isClickable = true
+            isFocusable = true
+            background = pressable(rounded(Color.TRANSPARENT, dp(6).toFloat()), Palette.PRESS_ON_DARK)
+            setOnClickListener { switchCamera() }
+        }
+        lensButton.addView(ImageView(this).apply { setImageResource(R.drawable.ic_switch_camera) })
+        val lensLabel = label(13f)
+        translate("switchLens") { lensLabel.text = it }
+        lensButton.addView(
+            lensLabel,
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-            ),
-        )
-        streamInfo = TextView(this).apply {
-            setTextColor(Color.rgb(190, 194, 205))
-            textSize = 12f
-            setPadding(0, dp(8), 0, 0)
-        }
-        bottomPanel.addView(
-            streamInfo,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-            ),
+            ).apply { marginStart = dp(6) },
         )
-        usbModeButton = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "USB"
-            setTextColor(Color.WHITE)
-            setPadding(0, 0, dp(24), 0)
-        }
-        wifiModeButton = RadioButton(this).apply {
-            id = View.generateViewId()
-            text = "Wi-Fi"
-            setTextColor(Color.WHITE)
-        }
-        val modeGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-            addView(usbModeButton)
-            addView(wifiModeButton)
-            check(usbModeButton.id)
-            setOnCheckedChangeListener { _, _ -> showModeHelp() }
-        }
-        bottomPanel.addView(
-            modeGroup,
+        sheet.addView(
+            lensButton,
             LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
             ).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
                 topMargin = dp(4)
             },
         )
-        computerAddress = EditText(this).apply {
-            setSingleLine(true)
-            hint = "IP компьютера (необязательно)"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.LTGRAY)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setBackgroundColor(Color.rgb(45, 48, 56))
+        column.addView(sheet, matchWidth())
+
+        buildSettings(root)
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val bottom = maxOf(bars.bottom, keyboard.bottom)
+            topBar.setPadding(dp(12) + bars.left, dp(2) + bars.top, dp(2) + bars.right, dp(2))
+            sheet.setPadding(dp(12) + bars.left, dp(10), dp(12) + bars.right, dp(10) + bottom)
+            settingsPanel.setPadding(dp(12) + bars.left, dp(14), dp(12) + bars.right, dp(14) + bars.bottom)
+            insets
         }
-        bottomPanel.addView(
-            computerAddress,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                topMargin = dp(8)
-            },
-        )
-        streamButton = Button(this).apply {
-            text = "Начать трансляцию"
-            isEnabled = false
-            setOnClickListener { toggleStreaming() }
+        setContentView(root)
+        ViewCompat.requestApplyInsets(root)
+        render()
+    }
+
+    private fun groupTitle(key: String): TextView =
+        label(12f, Palette.TEXT_SECONDARY, bold = true).apply {
+            letterSpacing = 0.05f
+            translate(key) { text = it.uppercase() }
         }
-        bottomPanel.addView(
-            streamButton,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                topMargin = dp(8)
-            },
-        )
-        lensButton = TextView(this).apply {
-            text = "Сменить камеру"
-            textSize = 15f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            setBackgroundColor(Color.rgb(105, 84, 220))
+
+    private fun buildSettings(root: FrameLayout) {
+        settingsOverlay = FrameLayout(this).apply {
+            setBackgroundColor(Palette.SCRIM)
+            visibility = View.GONE
             isClickable = true
-            isFocusable = true
-            setOnClickListener { switchCamera() }
+            setOnClickListener { closeSettings() }
         }
-        val buttonParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            topMargin = dp(12)
+        settingsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            background = GradientDrawable().apply {
+                setColor(Palette.SHEET)
+                val corner = dp(16).toFloat()
+                cornerRadii = floatArrayOf(corner, corner, corner, corner, 0f, 0f, 0f, 0f)
+            }
         }
-        bottomPanel.addView(lensButton, buttonParams)
-        root.addView(
-            bottomPanel,
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = label(15f, bold = true)
+        translate("settings") { title.text = it }
+        header.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        val close = iconButton(R.drawable.ic_close).apply { setOnClickListener { closeSettings() } }
+        translate("close") { close.contentDescription = it }
+        header.addView(close, LinearLayout.LayoutParams(dp(36), dp(36)))
+        settingsPanel.addView(header, matchWidth())
+
+        settingsPanel.addView(groupTitle("language"), matchWidth(14))
+        languageControl = SegmentedControl(this, Strings.languages).apply {
+            setLabels(Strings.languageNames)
+            select(language)
+            onChange = { chosen ->
+                language = chosen
+                preferences.edit().putString(KEY_LANGUAGE, chosen).apply()
+                render()
+            }
+        }
+        translate("language") { languageControl.contentDescription = it }
+        settingsPanel.addView(languageControl, matchWidth(6))
+
+        settingsPanel.addView(groupTitle("screen"), matchWidth(14))
+        val awakeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(32)
+        }
+        val awakeLabel = label(13f)
+        translate("keepAwake") { awakeLabel.text = it }
+        awakeRow.addView(awakeLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        keepAwakeToggle = ToggleView(this).apply {
+            isOn = preferences.getBoolean(KEY_KEEP_AWAKE, true)
+            onToggle = { on ->
+                preferences.edit().putBoolean(KEY_KEEP_AWAKE, on).apply()
+                render()
+            }
+        }
+        translate("keepAwake") { keepAwakeToggle.contentDescription = it }
+        awakeRow.addView(keepAwakeToggle)
+        settingsPanel.addView(awakeRow, matchWidth(6))
+
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (_: Exception) {
+            null
+        }
+        settingsPanel.addView(
+            label(12f, Palette.TEXT_SECONDARY).apply { text = "LumaLink Companion ${version ?: ""}".trim() },
+            matchWidth(14),
+        )
+        settingsOverlay.addView(
+            settingsPanel,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM,
             ),
         )
-        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            topPanel.setPadding(dp(20), dp(14) + systemBars.top, dp(20), dp(14))
-            bottomPanel.setPadding(dp(20), dp(14), dp(20), dp(14) + systemBars.bottom)
-            insets
+        root.addView(
+            settingsOverlay,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
+        settingsBack = object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() = closeSettings()
         }
-        setContentView(root)
-        ViewCompat.requestApplyInsets(root)
-        showModeHelp()
+        onBackPressedDispatcher.addCallback(this, settingsBack)
     }
 
-    private fun showModeHelp() {
-        val wifi = wifiModeButton.isChecked
-        computerAddress.visibility = if (wifi) View.VISIBLE else View.GONE
-        streamInfo.text = if (wifi) {
-            "В LumaLink Studio выберите Wi-Fi и нажмите «Подключить камеру», затем здесь — " +
-                "«Начать трансляцию». Компьютер найдётся сам; если нет, введите его IP. " +
-                "Без кода доступа — только доверенная сеть."
-        } else {
-            "Включите «USB-модем» в настройках телефона и нажмите «Начать трансляцию», " +
-                "затем в LumaLink Studio выберите USB и нажмите «Подключить камеру»."
-        }
+    private fun openSettings() {
+        settingsOverlay.visibility = View.VISIBLE
+        settingsBack.isEnabled = true
     }
 
-    private fun updateStreamingState() {
+    private fun closeSettings() {
+        settingsOverlay.visibility = View.GONE
+        settingsBack.isEnabled = false
+    }
+
+    /** Bring every state-dependent text, icon and enabled flag up to date. */
+    private fun render() {
+        if (!::settingsPanel.isInitialized) return
+        for ((setter, key) in translated) setter(t(key))
         val streaming = publisher != null || localServer != null
-        streamButton.text = if (streaming) "Остановить трансляцию" else "Начать трансляцию"
+        val wifi = modeControl.value == MODE_WIFI
+
+        val problem = cameraProblem
+        val (icon, status) = when {
+            problem != null -> R.drawable.ic_status_error to problem
+            !cameraReady -> R.drawable.ic_status_wait to t("startingCamera")
+            linkState == LinkEvent.CONNECTED -> R.drawable.ic_status_live to t("live", modeControl.value)
+            linkState == LinkEvent.FAILED -> R.drawable.ic_status_error to t("failed", linkDetail ?: t("closed"))
+            linkState == LinkEvent.NOT_FOUND -> R.drawable.ic_status_error to t("failed", t("notFound"))
+            linkState == LinkEvent.NEED_TETHERING -> R.drawable.ic_status_wait to t("needTethering")
+            linkState == LinkEvent.WAITING -> R.drawable.ic_status_wait to t("waitUsb")
+            linkState == LinkEvent.SEARCHING -> R.drawable.ic_status_wait to t("waitWifi")
+            linkState == LinkEvent.CONNECTING -> R.drawable.ic_status_wait to t("connecting", linkDetail ?: "")
+            else -> R.drawable.ic_status_ready to t("ready")
+        }
+        statusIcon.setImageResource(icon)
+        statusText.text = status
+
+        streamButton.text = t(if (streaming) "stop" else "start")
+        val radius = dp(6).toFloat()
+        streamButton.background = if (streaming) {
+            pressable(rounded(Color.TRANSPARENT, radius, Palette.BORDER_CONTROL, dp(1)), Palette.PRESS_ON_DARK)
+        } else {
+            pressable(rounded(Palette.TEXT, radius), Palette.PRESS_ON_LIGHT)
+        }
+        streamButton.setTextColor(if (streaming) Palette.TEXT else Palette.TEXT_ON_SOLID)
         streamButton.isEnabled = cameraReady
-        usbModeButton.isEnabled = !streaming
-        wifiModeButton.isEnabled = !streaming
+        streamButton.alpha = if (cameraReady) 1f else 0.45f
+
+        modeControl.isEnabled = !streaming
+        hostField.visibility = if (wifi && !streaming) View.VISIBLE else View.GONE
+        hintText.text = notice ?: when {
+            linkState == LinkEvent.CONNECTED -> t("hintLive")
+            linkState == LinkEvent.NOT_FOUND -> t("hintNotFound")
+            wifi -> t("hintWifi")
+            else -> t("hintUsb")
+        }
+        lensTag.text = t(if (lensFacing == CameraSelector.LENS_FACING_FRONT) "front" else "rear")
+
         // The stream stops when the screen turns off, so keep it on while streaming.
-        if (streaming) {
+        if (streaming && keepAwakeToggle.isOn) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
+    private fun showNotice(message: String) {
+        notice = message
+        render()
+    }
+
     private fun startCamera() {
-        statusLabel.text = "Подключение к камере…"
+        cameraProblem = null
+        render()
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener(
             {
@@ -310,7 +474,8 @@ class MainActivity : ComponentActivity() {
                     cameraProvider = providerFuture.get()
                     bindCamera()
                 } catch (error: Exception) {
-                    statusLabel.text = "Не удалось открыть камеру: ${error.localizedMessage}"
+                    cameraProblem = t("cameraOpenFailed", error.localizedMessage)
+                    render()
                 }
             },
             ContextCompat.getMainExecutor(this),
@@ -323,7 +488,8 @@ class MainActivity : ComponentActivity() {
             .requireLensFacing(lensFacing)
             .build()
         if (!provider.hasCamera(selector)) {
-            statusLabel.text = "Выбранная камера недоступна на устройстве"
+            cameraProblem = t("cameraUnavailable")
+            render()
             return
         }
 
@@ -357,7 +523,6 @@ class MainActivity : ComponentActivity() {
             activeCamera = null
             activeCamera = provider.bindToLifecycle(this, selector, preview, analysis)
             cameraReady = true
-            streamButton.isEnabled = true
             applyCameraSettings(JSONObject().apply {
                 put("autofocus", true)
                 put("focus", 0.5)
@@ -368,12 +533,11 @@ class MainActivity : ComponentActivity() {
                 put("fps", requestedFps)
                 put("resolution", requestedResolution)
             })
-            statusLabel.text = when (lensFacing) {
-                CameraSelector.LENS_FACING_FRONT -> "Предпросмотр · фронтальная камера"
-                else -> "Предпросмотр · основная камера"
-            }
+            cameraProblem = null
+            render()
         } catch (error: Exception) {
-            statusLabel.text = "Ошибка запуска камеры: ${error.localizedMessage}"
+            cameraProblem = t("cameraStartFailed", error.localizedMessage)
+            render()
         }
     }
 
@@ -405,7 +569,7 @@ class MainActivity : ComponentActivity() {
             applyCameraSettings(command)
         } catch (error: Exception) {
             Log.e(TAG, "Could not apply camera settings", error)
-            statusLabel.text = "Не удалось применить настройки: ${error.localizedMessage}"
+            showNotice(t("settingsFailed", error.localizedMessage))
         }
     }
 
@@ -436,7 +600,7 @@ class MainActivity : ComponentActivity() {
                 minimumFocusDistance * focusDistance.toFloat(),
             )
         } else if (!autofocus) {
-            statusLabel.text = "Ручной фокус этой камеры не поддерживается"
+            showNotice(t("manualFocusUnsupported"))
         }
 
         val isoChoice = command.optString("iso", "Авто")
@@ -517,14 +681,14 @@ class MainActivity : ComponentActivity() {
                 try {
                     captureRequestFuture.get()
                     if (!manualIso && isoChoice != "Авто") {
-                        statusLabel.text = "ISO вручную не поддерживается этой камерой"
+                        showNotice(t("manualIsoUnsupported"))
                     }
                 } catch (error: Exception) {
                     if (error.cause is CameraControl.OperationCanceledException) {
                         return@addListener
                     }
                     Log.e(TAG, "Camera2 rejected a camera setting", error)
-                    statusLabel.text = "Камера не поддерживает один из параметров"
+                    showNotice(t("settingUnsupported"))
                 }
             },
             ContextCompat.getMainExecutor(this),
@@ -550,11 +714,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun switchCamera() {
-        if (publisher != null) {
-            publisher?.stop()
-            publisher = null
-            updateStreamingState()
-        }
         lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
             CameraSelector.LENS_FACING_FRONT
         } else {
@@ -624,9 +783,7 @@ class MainActivity : ComponentActivity() {
             publishEncodedPackets(packets, frameWidth, frameHeight, rotationDegrees, frameStartedAt)
         } catch (error: Exception) {
             Log.e(TAG, "Could not encode camera frame", error)
-            runOnUiThread {
-                statusLabel.text = "Ошибка подготовки видеокадра: ${error.localizedMessage}"
-            }
+            runOnUiThread { showNotice(t("frameFailed", error.localizedMessage)) }
         } finally {
             image.close()
         }
@@ -742,62 +899,78 @@ class MainActivity : ComponentActivity() {
 
     private fun toggleStreaming() {
         if (publisher != null || localServer != null) {
-            publisher?.stop()
+            val wifiPublisher = publisher
+            val usbServer = localServer
             publisher = null
-            localServer?.stop()
             localServer = null
-            statusLabel.text = "Предпросмотр · камера готова"
-            updateStreamingState()
+            wifiPublisher?.stop()
+            usbServer?.stop()
+            linkState = null
+            linkDetail = null
+            notice = null
+            render()
             return
         }
-        if (!cameraReady) {
-            statusLabel.text = "Сначала дождитесь запуска камеры"
-            return
+        if (!cameraReady) return
+        linkState = null
+        linkDetail = null
+        notice = null
+        if (modeControl.value == MODE_USB) startUsbStream() else startWifiStream()
+        render()
+    }
+
+    /** Apply a link event from [source]; events from a stream already replaced are ignored. */
+    private fun onLinkEvent(source: Any, event: LinkEvent, detail: String?) {
+        if (source !== publisher && source !== localServer) return
+        when (event) {
+            LinkEvent.STOPPED -> linkState = null
+            LinkEvent.FAILED, LinkEvent.NOT_FOUND -> {
+                linkState = event
+                linkDetail = detail
+                if (source === publisher) publisher = null
+                if (source === localServer) localServer = null
+            }
+            else -> {
+                linkState = event
+                linkDetail = detail
+            }
         }
-        if (usbModeButton.isChecked) startUsbStream() else startWifiStream()
-        updateStreamingState()
+        notice = null
+        render()
     }
 
     private fun startUsbStream() {
-        val server = UsbFrameServer(
-            onStatus = { status -> runOnUiThread { statusLabel.text = status } },
+        lateinit var server: UsbFrameServer
+        server = UsbFrameServer(
+            onStatus = { event, detail -> runOnUiThread { onLinkEvent(server, event, detail) } },
             onControl = { command ->
                 runOnUiThread { applyCameraControl(command) }
             },
         )
+        localServer = server
         try {
             server.start()
-            localServer = server
         } catch (error: Exception) {
             Log.e(TAG, "Could not start USB camera stream", error)
-            statusLabel.text = "Не удалось открыть USB-канал: ${error.localizedMessage}"
+            localServer = null
+            notice = t("usbFailed", error.localizedMessage)
         }
     }
 
     private fun startWifiStream() {
-        val host = computerAddress.text.toString().trim().ifEmpty { null }
+        val host = hostInput.text.toString().trim().ifEmpty { null }
         if (host != null) {
             try {
                 InetAddress.getByName(host)
             } catch (error: Exception) {
-                statusLabel.text = "Введите IP-адрес компьютера в локальной сети"
+                notice = t("badHost")
                 return
             }
         }
         lateinit var activePublisher: H264Publisher
         activePublisher = H264Publisher(
             host,
-            onStatus = { status, isError ->
-                runOnUiThread {
-                    if (publisher === activePublisher) {
-                        statusLabel.text = status
-                        if (isError) {
-                            publisher = null
-                            updateStreamingState()
-                        }
-                    }
-                }
-            },
+            onStatus = { event, detail -> runOnUiThread { onLinkEvent(activePublisher, event, detail) } },
             onControl = { command ->
                 runOnUiThread { applyCameraControl(command) }
             },
@@ -809,17 +982,19 @@ class MainActivity : ComponentActivity() {
             Log.e(TAG, "Could not start camera publisher", error)
             activePublisher.stop()
             publisher = null
-            statusLabel.text = "Не удалось начать трансляцию: ${error.localizedMessage}"
+            notice = t("startFailed", error.localizedMessage)
         }
     }
-
-    private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
 
     companion object {
         private const val PERFORMANCE_LOG_INTERVAL = 30
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
+        private const val MODE_USB = "USB"
+        private const val MODE_WIFI = "Wi-Fi"
+        private const val PREFERENCES = "settings"
+        private const val KEY_LANGUAGE = "language"
+        private const val KEY_KEEP_AWAKE = "keep_awake"
         private const val TAG = "LumaLink"
     }
 }
