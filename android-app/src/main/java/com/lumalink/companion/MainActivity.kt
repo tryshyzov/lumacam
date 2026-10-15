@@ -500,12 +500,13 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        val fpsRange = cameraFpsRange(selector, requestedFps)
         val previewBuilder = Preview.Builder()
             .setTargetResolution(Size(640, 480))
-            .setTargetFrameRate(Range(requestedFps, requestedFps))
+            .setTargetFrameRate(fpsRange)
         Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-            Range(requestedFps, requestedFps),
+            fpsRange,
         )
         val preview = previewBuilder
             .build()
@@ -518,7 +519,7 @@ class MainActivity : ComponentActivity() {
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-            Range(requestedFps, requestedFps),
+            fpsRange,
         )
         val analysis = analysisBuilder
             .build()
@@ -546,6 +547,29 @@ class MainActivity : ComponentActivity() {
             cameraProblem = t("cameraStartFailed", error.localizedMessage)
             render()
         }
+    }
+
+    /**
+     * The frame rate range to run the camera at: the steady one closest to
+     * [requested] without going over it. A camera that cannot do the requested
+     * rate (many phones stop at 30 fps) runs at its best steady rate instead of
+     * a wide range, which lets it drop to half that in indoor light.
+     */
+    private fun cameraFpsRange(ranges: List<Range<Int>>, requested: Int): Range<Int>? {
+        val allowed = ranges.filter { it.upper <= requested }
+        return allowed.filter { it.lower == it.upper }.maxByOrNull { it.upper }
+            ?: allowed.maxWithOrNull(compareBy<Range<Int>> { it.upper }.thenBy { it.lower })
+            ?: ranges.minByOrNull { it.upper }
+    }
+
+    private fun cameraFpsRange(selector: CameraSelector, requested: Int): Range<Int> {
+        val info = cameraProvider?.let { selector.filter(it.availableCameraInfos).firstOrNull() }
+        val ranges = info?.let {
+            Camera2CameraInfo.from(it)
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.toList()
+        }.orEmpty()
+        return cameraFpsRange(ranges, requested) ?: Range(requested, requested)
     }
 
     private fun analysisSize(resolution: String): Size =
@@ -667,12 +691,7 @@ class MainActivity : ComponentActivity() {
             cameraInfo.getCameraCharacteristic(
                 CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
             )?.toList().orEmpty()
-        val fpsRange = fpsRanges
-            .filter { requestedFps in it.lower..it.upper }
-            .minByOrNull { it.upper - it.lower }
-            ?: fpsRanges.minByOrNull {
-                minOf(kotlin.math.abs(it.lower - requestedFps), kotlin.math.abs(it.upper - requestedFps))
-            }
+        val fpsRange = cameraFpsRange(fpsRanges, requestedFps)
         if (fpsRange != null) {
             options.setCaptureRequestOption(
                 CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -732,8 +751,11 @@ class MainActivity : ComponentActivity() {
     private fun analyzeFrame(image: ImageProxy) {
         try {
             if (publisher == null && localServer == null) return
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastEncodedFrameAt < 1_000L / requestedFps) return
+            // Camera frames arrive about one interval apart, a little early
+            // or late; a strict limit dropped every early one, and with it
+            // a third of the frames at 30 fps.
+            val now = SystemClock.elapsedRealtimeNanos()
+            if (now - lastEncodedFrameAt < FRAME_INTERVAL_TOLERANCE * 1_000_000_000L / requestedFps) return
             lastEncodedFrameAt = now
             val frameStartedAt = SystemClock.elapsedRealtimeNanos()
             val crop = image.cropRect
@@ -1011,6 +1033,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val PERFORMANCE_LOG_INTERVAL = 30
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
+        private const val FRAME_INTERVAL_TOLERANCE = 0.75
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val MODE_USB = "USB"
