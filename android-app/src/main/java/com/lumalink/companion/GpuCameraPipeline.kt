@@ -32,8 +32,9 @@ import java.util.concurrent.Executor
  * A CameraX effect on the preview hands every camera frame to this processor
  * as an OpenGL texture. Each frame is drawn twice: into the on-screen preview,
  * with the rotation CameraX asks for, and into the encoder's input surface,
- * as the camera buffer is (the orientation the copying path sends too, which
- * the desktop turns by 180°). Everything runs on one GL thread.
+ * as the camera buffer is, turned by [setStreamRotation] (the orientation the
+ * copying path sends too, which the desktop turns by 180°). Everything runs
+ * on one GL thread.
  */
 internal class GpuCameraPipeline(
     private val frames: Frames,
@@ -76,8 +77,13 @@ internal class GpuCameraPipeline(
     private val textureMatrix = FloatArray(16)
     private val previewMatrix = FloatArray(16)
     private val encoderMatrix = FloatArray(16)
-    @Volatile private var bufferCorrection = FloatArray(16).also { flipForGl(it) }
+    private var cameraCorrection = FloatArray(16).also { Matrix.setIdentityM(it, 0) }
+    private var streamRotation = 0
+    /** Maps the encoder's picture to the camera buffer, with the encoder's turn. */
+    @Volatile private var bufferCorrection = Correction(FloatArray(16).also { flipForGl(it) }, 0)
     @Volatile private var requestedSize = Size(0, 0)
+
+    private class Correction(val matrix: FloatArray, val rotationDegrees: Int)
 
     /**
      * Tell the pipeline about the camera being bound. The camera rotates (and,
@@ -87,6 +93,7 @@ internal class GpuCameraPipeline(
      * outputs (SurfaceOutputImpl): predict the texture transform from the
      * sensor orientation and lens, invert it, and keep only the flip OpenGL needs.
      */
+    @Synchronized
     fun setCamera(sensorRotationDegrees: Int, frontFacing: Boolean, streamSize: Size) {
         requestedSize = streamSize
         val predicted = FloatArray(16)
@@ -98,12 +105,35 @@ internal class GpuCameraPipeline(
             Matrix.translateM(predicted, 0, 1f, 0f, 0f)
             Matrix.scaleM(predicted, 0, -1f, 1f, 1f)
         }
-        val inverted = FloatArray(16)
-        Matrix.invertM(inverted, 0, predicted, 0)
+        Matrix.invertM(cameraCorrection, 0, predicted, 0)
+        updateCorrection()
+    }
+
+    /**
+     * Turn the encoded picture clockwise by [degrees] from the camera buffer,
+     * a quarter-turn multiple; a quarter turn swaps the encoder's width and
+     * height, and the next frame goes to a new encoder.
+     */
+    @Synchronized
+    fun setStreamRotation(degrees: Int) {
+        streamRotation = ((degrees % 360) + 360) % 360
+        updateCorrection()
+    }
+
+    private fun updateCorrection() {
+        // A point of the encoder's picture, in image coordinates, comes from
+        // the camera buffer turned back by the stream's rotation.
+        val turn = FloatArray(16)
+        Matrix.setIdentityM(turn, 0)
+        Matrix.translateM(turn, 0, 0.5f, 0.5f, 0f)
+        Matrix.rotateM(turn, 0, -streamRotation.toFloat(), 0f, 0f, 1f)
+        Matrix.translateM(turn, 0, -0.5f, -0.5f, 0f)
         val flip = FloatArray(16).also { flipForGl(it) }
+        val turnedFlip = FloatArray(16)
+        Matrix.multiplyMM(turnedFlip, 0, turn, 0, flip, 0)
         val correction = FloatArray(16)
-        Matrix.multiplyMM(correction, 0, inverted, 0, flip, 0)
-        bufferCorrection = correction
+        Matrix.multiplyMM(correction, 0, cameraCorrection, 0, turnedFlip, 0)
+        bufferCorrection = Correction(correction, streamRotation)
     }
 
     private var preview: SurfaceOutput? = null
@@ -221,7 +251,9 @@ internal class GpuCameraPipeline(
     }
 
     private fun encode(timestamp: Long) {
-        val target = frames.encoderFor(cameraSize)
+        val correction = bufferCorrection
+        val size = if (correction.rotationDegrees % 180 == 0) cameraSize else Size(cameraSize.height, cameraSize.width)
+        val target = frames.encoderFor(size)
         if (target !== encoder) {
             // Stop drawing into the old encoder before it is closed.
             destroySurface(encoderSurface)
@@ -231,8 +263,8 @@ internal class GpuCameraPipeline(
             if (target != null) encoderSurface = windowSurface(checkNotNull(target.inputSurface))
         }
         if (target != null && encoderSurface != EGL14.EGL_NO_SURFACE && frames.wantsFrame(timestamp)) {
-            Matrix.multiplyMM(encoderMatrix, 0, textureMatrix, 0, bufferCorrection, 0)
-            draw(encoderSurface, cameraSize, encoderMatrix)
+            Matrix.multiplyMM(encoderMatrix, 0, textureMatrix, 0, correction.matrix, 0)
+            draw(encoderSurface, size, encoderMatrix)
             EGLExt.eglPresentationTimeANDROID(display, encoderSurface, timestamp)
             check(EGL14.eglSwapBuffers(display, encoderSurface)) { "Could not hand a frame to the encoder" }
             frames.frameEncoded(target)

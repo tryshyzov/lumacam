@@ -14,6 +14,7 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Gravity
+import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
@@ -88,6 +89,20 @@ class MainActivity : ComponentActivity() {
     private var videoEncoder: H264Encoder? = null
     private var gpuCameraPipeline: GpuCameraPipeline? = null
     private var gpuFailed = false
+    private var copyingAnalysisUseCase: ImageAnalysis? = null
+
+    /** Which way up the phone is held (see [HeldRotation]); the video follows it. */
+    private var heldRotation = HeldRotation.INITIAL
+    private val orientationListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(degrees: Int) {
+                val next = HeldRotation.snap(degrees, heldRotation)
+                if (next == heldRotation) return
+                heldRotation = next
+                applyStreamRotation()
+            }
+        }
+    }
     // Set by the network senders when they need a key frame; the camera thread
     // asks the encoder for one, at most every KEY_FRAME_REQUEST_INTERVAL_MS
     // so a slow link does not turn every frame into a large key frame.
@@ -123,6 +138,9 @@ class MainActivity : ComponentActivity() {
         // For comparing the two paths on one phone:
         // adb shell am start -n com.lumalink.companion/.MainActivity --ez force_copy true
         gpuFailed = intent.getBooleanExtra(EXTRA_FORCE_COPY, false)
+        // For checking every orientation on a phone lying flat, where the
+        // sensor keeps it: --ei held_rotation 0..3 (a Surface.ROTATION_*).
+        heldRotation = intent.getIntExtra(EXTRA_HELD_ROTATION, heldRotation).takeIf { it in 0..3 } ?: heldRotation
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
         // Debug builds are signed with another key and cannot take a release over them.
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
@@ -137,6 +155,16 @@ class MainActivity : ComponentActivity() {
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+    }
+
+    override fun onPause() {
+        orientationListener.disable()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -659,12 +687,16 @@ class MainActivity : ComponentActivity() {
         try {
             provider.unbindAll()
             activeCamera = null
+            copyingAnalysisUseCase = null
             activeCamera = if (gpu != null) {
                 selector.filter(provider.availableCameraInfos).firstOrNull()?.let { info ->
                     gpu.setCamera(
                         info.sensorRotationDegrees,
                         lensFacing == CameraSelector.LENS_FACING_FRONT,
                         analysisSize(requestedResolution),
+                    )
+                    gpu.setStreamRotation(
+                        info.getSensorRotationDegrees(HeldRotation.streamTarget(heldRotation)),
                     )
                 }
                 val group = UseCaseGroup.Builder()
@@ -702,7 +734,7 @@ class MainActivity : ComponentActivity() {
     private fun copyingAnalysis(fpsRange: Range<Int>): ImageAnalysis {
         val analysisBuilder = ImageAnalysis.Builder()
             .setTargetResolution(analysisSize(requestedResolution))
-            .setTargetRotation(Surface.ROTATION_90)
+            .setTargetRotation(HeldRotation.streamTarget(heldRotation))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -712,7 +744,21 @@ class MainActivity : ComponentActivity() {
             .build()
             .also { useCase ->
                 useCase.setAnalyzer(cameraExecutor, ::analyzeFrame)
+                copyingAnalysisUseCase = useCase
             }
+    }
+
+    /**
+     * Turn the video to the way the phone is now held. CameraX reports the
+     * turn for the copying path (see [analyzeFrame]); the GPU path is told it.
+     * A quarter turn changes the video's shape, so the next frame starts a
+     * new encoder.
+     */
+    private fun applyStreamRotation() {
+        val target = HeldRotation.streamTarget(heldRotation)
+        copyingAnalysisUseCase?.targetRotation = target
+        val info = activeCamera?.cameraInfo ?: return
+        if (!gpuFailed) gpuCameraPipeline?.setStreamRotation(info.getSensorRotationDegrees(target))
     }
 
     private fun gpuPipeline(): GpuCameraPipeline =
@@ -1272,6 +1318,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
         private const val FRAME_INTERVAL_TOLERANCE = 0.75
         private const val EXTRA_FORCE_COPY = "force_copy"
+        private const val EXTRA_HELD_ROTATION = "held_rotation"
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val MODE_USB = "USB"
