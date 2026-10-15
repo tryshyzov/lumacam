@@ -260,16 +260,21 @@ class _SocketReader:
         return self._connection.recv(size)
 
 
-def _close_now(connection: socket.socket) -> None:
-    """Close a socket so that a reader blocked in another thread wakes up.
+def _interrupt(connection: socket.socket) -> None:
+    """Wake a reader blocked on the socket in another thread.
 
-    ``close()`` alone is deferred while a ``makefile()`` object is still open.
+    ``close()`` alone is deferred while a ``makefile()`` object is still open,
+    so the socket is shut down first. Windows wakes the reader only once the
+    socket is also closed; on macOS closing it right after the shutdown can
+    leave the reader waiting out its whole timeout, so there the owning
+    thread closes it, as it does anyway.
     """
     try:
         connection.shutdown(socket.SHUT_RDWR)
     except OSError:
         pass
-    connection.close()
+    if sys.platform == "win32":
+        connection.close()
 
 
 def _read_exactly(
@@ -379,7 +384,7 @@ class CameraStreamServer:
         client = self._client
         self._client = None
         if client is not None:
-            _close_now(client)
+            _interrupt(client)
         listener = self._listener
         self._listener = None
         if listener is not None:
@@ -537,7 +542,7 @@ class H264FrameReceiver:
         self._stop.set()
         connection = self._connection
         if connection is not None:
-            _close_now(connection)
+            _interrupt(connection)
 
     def send_control(self, command: dict[str, object]) -> None:
         connection = self._connection
