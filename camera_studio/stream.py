@@ -261,16 +261,20 @@ class _SocketReader:
 
 
 def _interrupt(connection: socket.socket) -> None:
-    """Wake a reader blocked on the socket in another thread, which closes it.
+    """Wake a reader blocked on the socket in another thread.
 
     ``close()`` alone is deferred while a ``makefile()`` object is still open,
-    and on macOS closing the socket right after the shutdown can leave the
-    reader waiting out its whole timeout; the owning thread closes it instead.
+    so the socket is shut down first. Windows wakes the reader only once the
+    socket is also closed; on macOS closing it right after the shutdown can
+    leave the reader waiting out its whole timeout, so there the owning
+    thread closes it, as it does anyway.
     """
     try:
         connection.shutdown(socket.SHUT_RDWR)
     except OSError:
         pass
+    if sys.platform == "win32":
+        connection.close()
 
 
 def _read_exactly(

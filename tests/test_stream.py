@@ -125,7 +125,8 @@ class H264TransportTests(unittest.TestCase):
 
     def test_stopping_wakes_a_reader_blocked_on_the_socket(self) -> None:
         # Closing right after the shutdown left about one reader in ten
-        # waiting out its timeout on macOS; repeat to catch such a race.
+        # waiting out its timeout on macOS, while Windows needs the close;
+        # repeat to catch such a race.
         for _ in range(50):
             listener = socket.socket()
             listener.bind(("127.0.0.1", 0))
@@ -133,7 +134,14 @@ class H264TransportTests(unittest.TestCase):
             connection = socket.create_connection(listener.getsockname())
             peer, _ = listener.accept()
             connection.settimeout(5)
-            reader = threading.Thread(target=lambda: connection.recv(4), daemon=True)
+
+            def read() -> None:
+                try:
+                    connection.recv(4)
+                except OSError:
+                    pass  # Windows reports the closed socket as an error
+
+            reader = threading.Thread(target=read, daemon=True)
             reader.start()
             time.sleep(0.001)
 
