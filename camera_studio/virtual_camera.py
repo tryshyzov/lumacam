@@ -10,7 +10,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from camera_studio.camera_backend import VirtualCameraSession
-from camera_studio.stream import correct_stream_orientation
 
 OUTPUT_WIDTH = 1280
 OUTPUT_HEIGHT = 720
@@ -47,8 +46,8 @@ class VirtualCameraOutput:
     def submit(self, image: Image.Image | av.VideoFrame) -> None:
         """Show a picture, or a frame straight from the H.264 decoder.
 
-        A decoded frame is still upside down, as the phone sends it; the
-        camera turns it with stream.correct_stream_orientation.
+        A decoded frame is still upside down, as the phone sends it (see
+        stream.correct_stream_orientation); the camera turns it.
         """
         if self._stop.is_set():
             return
@@ -103,15 +102,19 @@ def _to_output_frame(image: Image.Image | av.VideoFrame) -> np.ndarray:
     already here for decoding, does it in about 2. The size is the one
     Image.thumbnail picks, so a smaller picture is never enlarged.
 
-    A decoded frame is converted from YUV and scaled in one pass and turned
-    upright only at the camera's size: 1.4 ms for a 1080p frame, against
-    2.6 ms through the full-size picture. Pillow turns it; NumPy's reversed
-    copy took 2.3 ms by itself.
+    A decoded frame is converted from YUV and scaled in one pass, then
+    turned upright as a view with its pixels in reverse order: the camera
+    output copies the frame anyway, so it is never copied here. With the
+    LumaLink Camera output this took 4.5 ms a frame on a Windows PC, against
+    10.7 ms through the full-size picture. Such a frame is not C-contiguous.
     """
     if isinstance(image, av.VideoFrame):
         width, height = _fitted_size(image.width, image.height)
-        scaled = image.reformat(width=width, height=height, format="rgb24", interpolation="BILINEAR")
-        picture = np.asarray(correct_stream_orientation(scaled.to_image()))
+        scaled = image.reformat(
+            width=width, height=height, format="rgb24", interpolation="BILINEAR"
+        ).to_ndarray()
+        # Turned by 180 degrees, as stream.correct_stream_orientation does.
+        picture = scaled.reshape(-1, 3)[::-1].reshape(height, width, 3)
         if (width, height) == (OUTPUT_WIDTH, OUTPUT_HEIGHT):
             return picture
         return _centered(picture)

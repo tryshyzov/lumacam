@@ -124,8 +124,8 @@ class OutputFrameTests(unittest.TestCase):
                     correct_stream_orientation(decoded.to_image())
                 )
 
+                # A view in reverse order, which the camera outputs copy.
                 self.assertEqual(frame.shape, (OUTPUT_HEIGHT, OUTPUT_WIDTH, 3))
-                self.assertTrue(frame.flags.c_contiguous)
                 difference = np.abs(frame.astype(int) - expected.astype(int))
                 self.assertLess(difference.mean(), 2)
                 self.assertTrue(((frame == 0).all(axis=2) == (expected == 0).all(axis=2)).mean() > 0.999)
