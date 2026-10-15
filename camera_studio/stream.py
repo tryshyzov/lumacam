@@ -502,10 +502,17 @@ class H264FrameReceiver:
             try:
                 forward = open_adb_forward(self._port)
             except (OSError, subprocess.SubprocessError) as adb_error:
-                raise ConnectionError(
-                    f"{tethering_error} Если сеть блокирует VPN, включите на телефоне "
-                    f"«Отладку по USB» — подключение пойдёт в обход VPN ({adb_error})."
-                ) from adb_error
+                if sys.platform == "darwin":
+                    advice = (
+                        "«USB-модем» Mac понимает не на всех телефонах: включите на "
+                        "телефоне «Отладку по USB» — подключение пойдёт через неё"
+                    )
+                else:
+                    advice = (
+                        "Если сеть блокирует VPN, включите на телефоне "
+                        "«Отладку по USB» — подключение пойдёт в обход VPN"
+                    )
+                raise ConnectionError(f"{tethering_error} {advice} ({adb_error}).") from adb_error
             self._adb_forward = forward
             return socket.create_connection(("127.0.0.1", forward.port), timeout=5)
 

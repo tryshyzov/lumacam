@@ -158,6 +158,14 @@ class MainWindowTests(unittest.TestCase):
                     bool(flags & ui.Qt.WindowType.ExpandedClientAreaHint), macos
                 )
 
+    def test_usb_hint_points_mac_users_to_usb_debugging(self) -> None:
+        for macos, words in ((False, "«USB-модем» и нажмите"), (True, "«Отладку по USB»")):
+            with self.subTest(macos=macos), mock.patch.object(ui, "MACOS", macos):
+                self.window.vpn_blocks_lan = False
+                self.window._refresh()
+
+                self.assertIn(words, self.window.hint_label.text())
+
     def test_first_frame_connects_and_starts_the_virtual_camera(self) -> None:
         receiver = self.connect_phone()
         self.window._poll_stream()

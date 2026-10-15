@@ -710,7 +710,12 @@ class MainWindow(QWidget):
         self.mode_seg.setEnabled(not self.streaming)
 
         if self.mode_seg.value() == "USB":
-            hint = self.t("hint_usb_vpn" if self.vpn_blocks_lan else "hint_usb")
+            if self.vpn_blocks_lan:
+                hint = self.t("hint_usb_vpn")
+            else:
+                # macOS has no driver for the RNDIS tethering most Android
+                # phones use, so there the ADB route is the one that works.
+                hint = self.t("hint_usb_macos" if MACOS else "hint_usb")
         elif self.vpn_blocks_lan:
             hint = self.t("hint_wifi_vpn")
         else:
