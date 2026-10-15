@@ -1,0 +1,16 @@
+# Text is stored with LF; Windows-only formats keep CRLF in the checkout.
+* text=auto eol=lf
+
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.sln     text eol=crlf
+*.vcxproj text eol=crlf
+*.iss     text eol=crlf
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.icns binary
+*.jar  binary
+*.dll  binary
+*.exe  binary
