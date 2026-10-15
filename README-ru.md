@@ -2,6 +2,8 @@
 
 <p align="center"><img src="assets/LumaCam.png" alt="LumaLink Studio logo" width="240"></p>
 
+<p align="center"><a href="https://tryshyzov.github.io/lumacam/">Сайт и загрузки</a></p>
+
 Прототип приложения для Windows, использующего Android-смартфон в качестве камеры. Приложение для iOS и установочный файл пока не реализованы. (Полностью вайбкодинг.) 
 
 ## Запуск на ПК
