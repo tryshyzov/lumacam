@@ -45,6 +45,20 @@ internal object Strings {
         "usbFailed" to "Не удалось открыть USB-канал: %s",
         "badHost" to "Введите IP-адрес компьютера в локальной сети",
         "startFailed" to "Не удалось начать трансляцию: %s",
+        "updates" to "Обновления",
+        "updateCheck" to "Проверить",
+        "updateNow" to "Обновить",
+        "updateRetry" to "Повторить",
+        "updateChecking" to "Проверка обновлений…",
+        "updateLatest" to "Установлена последняя версия",
+        "updateAvailable" to "Доступна версия %s",
+        "updateDownloading" to "Загрузка версии %s… %d%%",
+        "updateInstalling" to "Установка версии %s…",
+        "updateCheckFailed" to "Не удалось проверить обновления",
+        "updateFailed" to "Не удалось обновить: %s",
+        "updateCancelled" to "Обновление отменено",
+        "updateSignature" to "Обновление подписано другим ключом. Удалите приложение и установите его заново с GitHub.",
+        "updateAfterStream" to "Остановите трансляцию, чтобы обновить",
     )
 
     private val en = mapOf(
@@ -87,6 +101,20 @@ internal object Strings {
         "usbFailed" to "Could not open the USB channel: %s",
         "badHost" to "Enter the computer's local network IP address",
         "startFailed" to "Could not start streaming: %s",
+        "updates" to "Updates",
+        "updateCheck" to "Check",
+        "updateNow" to "Update",
+        "updateRetry" to "Retry",
+        "updateChecking" to "Checking for updates…",
+        "updateLatest" to "You have the latest version",
+        "updateAvailable" to "Version %s is available",
+        "updateDownloading" to "Downloading version %s… %d%%",
+        "updateInstalling" to "Installing version %s…",
+        "updateCheckFailed" to "Could not check for updates",
+        "updateFailed" to "Could not update: %s",
+        "updateCancelled" to "The update was cancelled",
+        "updateSignature" to "The update is signed with a different key. Uninstall the app and install it again from GitHub.",
+        "updateAfterStream" to "Stop streaming to update",
     )
 
     private val tables = mapOf("ru" to ru, "en" to en)

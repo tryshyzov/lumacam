@@ -57,4 +57,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
     testImplementation("junit:junit:4.13.2")
+    // Android's own org.json is only a stub in local unit tests.
+    testImplementation("org.json:json:20240303")
 }
