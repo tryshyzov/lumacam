@@ -116,5 +116,37 @@ class MacInstallTests(unittest.TestCase):
             self.assertFalse(Path(str(installed) + ".new").exists())
 
 
+class WindowsInstallTests(unittest.TestCase):
+    def test_runs_setup_elevated_and_silently(self) -> None:
+        calls = []
+
+        def shell_execute(*arguments):
+            calls.append(arguments)
+            return 42
+
+        self.assertTrue(updates.install_windows(Path("C:/Temp/Setup.exe"), shell_execute))
+        _, verb, file, parameters, _, _ = calls[0]
+        self.assertEqual(verb, "runas")
+        self.assertEqual(Path(file), Path("C:/Temp/Setup.exe"))
+        for switch in ("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCLOSEAPPLICATIONS", "/RELAUNCH"):
+            self.assertIn(switch, parameters.split())
+
+    def test_keeps_running_when_the_administrator_prompt_is_declined(self) -> None:
+        # ShellExecuteW answers SE_ERR_ACCESSDENIED (5) when the user says no.
+        self.assertFalse(updates.install_windows(Path("Setup.exe"), lambda *_: 5))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows mutex")
+    def test_holds_the_mutex_setup_waits_for(self) -> None:
+        import ctypes
+
+        updates.hold_app_mutex()
+        open_mutex = ctypes.windll.kernel32.OpenMutexW
+        open_mutex.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+        open_mutex.restype = ctypes.c_void_p
+        handle = open_mutex(0x00100000, False, updates.APP_MUTEX)  # SYNCHRONIZE
+        self.assertTrue(handle)
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
 if __name__ == "__main__":
     unittest.main()

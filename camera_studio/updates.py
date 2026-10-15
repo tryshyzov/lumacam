@@ -190,24 +190,56 @@ def install_macos(image: Path, bundle: Path) -> None:
     )
 
 
-def install_windows(installer: Path) -> bool:
+# Setup waits for this mutex to go away before it replaces the app; the name
+# is repeated in installer/LumaLinkStudio.iss.
+APP_MUTEX = "LumaLinkStudioRunning"
+# Silent, without message boxes or a reboot; never closing other applications
+# (they may hold the camera DLL, which is replaced on restart instead).
+# /RELAUNCH makes Setup start the new version when it is done.
+SETUP_ARGUMENTS = "/SILENT /SUPPRESSMSGBOXES /NORESTART /NOCLOSEAPPLICATIONS /RELAUNCH"
+_SW_SHOWNORMAL = 1
+_app_mutex: int | None = None
+
+
+def install_windows(installer: Path, shell_execute: Callable[..., int] | None = None) -> bool:
     """Run the downloaded installer, which replaces the app once it has quit.
 
-    Contract (implemented on the Windows side): start Setup through
-    ShellExecuteW, since it needs administrator rights, with /SILENT
-    /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS=no. Return False when the
-    user declines the administrator prompt; True when Setup is running. Setup
-    waits for the app's mutex (see hold_app_mutex) to disappear, installs and
-    starts the new version.
+    Setup needs administrator rights, so it is started through ShellExecuteW
+    with the "runas" verb, which returns once the user has answered the
+    administrator prompt. False: the user declined, keep running. True: Setup
+    is running and waits for the app's mutex (see hold_app_mutex) to go away,
+    so quit right away; it installs and starts the new version.
     """
-    raise NotImplementedError("Обновление на Windows ещё не готово")
+    if shell_execute is None:
+        import ctypes
+
+        function = ctypes.windll.shell32.ShellExecuteW
+        function.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_int,
+        ]
+        function.restype = ctypes.c_void_p
+        shell_execute = function
+    result = shell_execute(None, "runas", str(installer), SETUP_ARGUMENTS, None, _SW_SHOWNORMAL)
+    # Values up to 32 are errors, among them a declined administrator prompt.
+    return (result or 0) > 32
 
 
 def hold_app_mutex() -> None:
     """Hold the named mutex Setup waits on while the app runs (Windows only).
 
-    Called once at startup. Implemented on the Windows side; nothing to do
-    elsewhere.
+    Called once at startup; Windows releases it when the process exits.
     """
-    if sys.platform != "win32":
+    global _app_mutex
+    if sys.platform != "win32" or _app_mutex:
         return
+    import ctypes
+
+    create = ctypes.windll.kernel32.CreateMutexW
+    create.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    create.restype = ctypes.c_void_p
+    _app_mutex = create(None, False, APP_MUTEX)
