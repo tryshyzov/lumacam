@@ -24,6 +24,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_usb": "Ищем телефон по USB…",
         "status_wifi": "Ждём телефон в сети Wi-Fi…",
         "hint_usb": "Включите на телефоне «USB-модем» и нажмите «Начать трансляцию» в LumaLink Companion.",
+        "hint_usb_macos": (
+            "Включите на телефоне «Отладку по USB» и нажмите «Начать трансляцию» в LumaLink Companion. "
+            "«USB-модем» Mac понимает не на всех телефонах."
+        ),
         "hint_usb_vpn": (
             "VPN на этом компьютере блокирует локальную сеть, поэтому «USB-модем» не сработает. "
             "Включите на телефоне «Отладку по USB» — подключение пойдёт в обход VPN. "
@@ -89,6 +93,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_usb": "Looking for the phone over USB…",
         "status_wifi": "Waiting for the phone on Wi-Fi…",
         "hint_usb": "Turn on USB tethering on the phone and start the stream in LumaLink Companion.",
+        "hint_usb_macos": (
+            "Turn on USB debugging on the phone and start the stream in LumaLink Companion. "
+            "Many phones' USB tethering does not work with a Mac."
+        ),
         "hint_usb_vpn": (
             "A VPN on this computer blocks the local network, so USB tethering will not work. "
             "Turn on USB debugging on the phone and the connection will bypass the VPN. "
