@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ipaddress
 import queue
-import socket
 import sys
 import time
 from collections import deque
@@ -42,6 +41,7 @@ from camera_studio.stream import (
     H264Decoder,
     H264FrameReceiver,
     correct_stream_orientation,
+    local_ipv4_addresses,
     local_network_blocked,
 )
 from camera_studio.virtual_camera import VirtualCameraOutput
@@ -917,13 +917,8 @@ class MainWindow(QWidget):
 
     @staticmethod
     def _local_ipv4_addresses() -> list[str]:
-        addresses = {
-            result[4][0]
-            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
-            if not ipaddress.IPv4Address(result[4][0]).is_loopback
-        }
         return sorted(
-            addresses,
+            local_ipv4_addresses(),
             key=lambda address: (
                 not address.startswith("192.168."),
                 not address.startswith("10."),
