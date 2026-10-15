@@ -32,6 +32,7 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -705,7 +706,8 @@ class MainActivity : ComponentActivity() {
                     .build()
                 provider.bindToLifecycle(this, selector, group)
             } else {
-                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange))
+                val info = selector.filter(provider.availableCameraInfos).firstOrNull()
+                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange, info))
             }
             cameraReady = true
             applyCameraSettings(JSONObject().apply {
@@ -731,10 +733,15 @@ class MainActivity : ComponentActivity() {
     }
 
     /** The CPU path: camera frames copied into the encoder (see [analyzeFrame]). */
-    private fun copyingAnalysis(fpsRange: Range<Int>): ImageAnalysis {
+    private fun copyingAnalysis(fpsRange: Range<Int>, info: CameraInfo?): ImageAnalysis {
+        val target = HeldRotation.streamTarget(heldRotation)
+        // CameraX reads the resolution in the target rotation's orientation:
+        // given landscape for a portrait stream, it picked a 4:3 size instead.
+        val size = analysisSize(requestedResolution)
+        val portrait = (info?.getSensorRotationDegrees(target) ?: 0) % 180 != 0
         val analysisBuilder = ImageAnalysis.Builder()
-            .setTargetResolution(analysisSize(requestedResolution))
-            .setTargetRotation(HeldRotation.streamTarget(heldRotation))
+            .setTargetResolution(if (portrait) Size(size.height, size.width) else size)
+            .setTargetRotation(target)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
