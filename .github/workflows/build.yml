@@ -161,6 +161,11 @@ jobs:
             exit 1
           fi
 
+      - name: Run tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --no-daemon
+
       - name: Build APK
         env:
           LUMALINK_KEYSTORE_FILE: ${{ steps.signing.outputs.keystore }}
