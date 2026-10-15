@@ -64,12 +64,17 @@ internal class H264Encoder(
         Log.i(TAG, "Using H.264 encoder $codecName for ${width}x$height at $fps FPS")
     }
 
-    fun encode(nv21: ByteArray): List<EncodedFrame> {
-        require(nv21.size == width * height * 3 / 2) {
+    /** Encode a frame given as separate, tightly packed Y, U and V planes. */
+    fun encode(y: ByteArray, u: ByteArray, v: ByteArray): List<EncodedFrame> {
+        require(y.size == width * height && u.size == width * height / 4 && v.size == u.size) {
             "Неверный размер входного кадра H.264"
         }
         queueInput { inputImage ->
-            copyNv21ToImage(nv21, inputImage.planes)
+            val planes = inputImage.planes
+            require(planes.size >= 3) { "H.264-кодировщик выдал неполный YUV-кадр" }
+            copyPlane(PlaneView.packed(y, width), PlaneView.of(planes[0]), width, height)
+            copyPlane(PlaneView.packed(u, width / 2), PlaneView.of(planes[1]), width / 2, height / 2)
+            copyPlane(PlaneView.packed(v, width / 2), PlaneView.of(planes[2]), width / 2, height / 2)
         }
         return drainOutput()
     }
@@ -173,36 +178,6 @@ internal class H264Encoder(
         }
     }
 
-    private fun copyNv21ToImage(
-        source: ByteArray,
-        planes: Array<Image.Plane>,
-    ) {
-        require(planes.size >= 3) { "H.264-кодировщик выдал неполный YUV-кадр" }
-        val yPlane = planes[0]
-        for (y in 0 until height) {
-            val row = y * yPlane.rowStride
-            for (x in 0 until width) {
-                yPlane.buffer.put(row + x * yPlane.pixelStride, source[y * width + x])
-            }
-        }
-        val chromaOffset = width * height
-        val uPlane = planes[1]
-        val vPlane = planes[2]
-        for (y in 0 until height / 2) {
-            for (x in 0 until width / 2) {
-                val sourceIndex = chromaOffset + (y * width + x * 2)
-                uPlane.buffer.put(
-                    y * uPlane.rowStride + x * uPlane.pixelStride,
-                    source[sourceIndex + 1],
-                )
-                vPlane.buffer.put(
-                    y * vPlane.rowStride + x * vPlane.pixelStride,
-                    source[sourceIndex],
-                )
-            }
-        }
-    }
-
     private fun copyCameraPlanes(
         source: Array<ImageProxy.PlaneProxy>,
         destination: Array<Image.Plane>,
@@ -210,61 +185,12 @@ internal class H264Encoder(
         require(source.size >= 3 && destination.size >= 3) {
             "Камера или H.264-кодировщик выдал неполный YUV-кадр"
         }
-        val sourceViews = source.map {
-            PlaneView(it.buffer, it.rowStride, it.pixelStride)
-        }
-        val destinationViews = destination.map {
-            PlaneView(it.buffer, it.rowStride, it.pixelStride)
-        }
+        val sourceViews = source.map { PlaneView.of(it) }
+        val destinationViews = destination.map { PlaneView.of(it) }
 
         copyPlane(sourceViews[0], destinationViews[0], width, height)
         copyPlane(sourceViews[1], destinationViews[1], width / 2, height / 2)
         copyPlane(sourceViews[2], destinationViews[2], width / 2, height / 2)
-    }
-
-    private fun copyPlane(
-        source: PlaneView,
-        destination: PlaneView,
-        rowBytes: Int,
-        rows: Int,
-    ) {
-        val sourceBuffer = source.buffer.duplicate()
-        val destinationBuffer = destination.buffer.duplicate()
-        val sourceStart = source.buffer.position()
-        val destinationStart = destination.buffer.position()
-        if (source.pixelStride == 1 && destination.pixelStride == 1) {
-            for (row in 0 until rows) {
-                sourceBuffer.position(sourceStart + row * source.rowStride)
-                destinationBuffer.position(destinationStart + row * destination.rowStride)
-                sourceBuffer.limit(sourceBuffer.position() + rowBytes)
-                destinationBuffer.put(sourceBuffer)
-                sourceBuffer.limit(source.buffer.limit())
-            }
-            return
-        }
-        // Interleaved chroma (U and V sharing memory, pixel stride 2): reading
-        // and writing a sample at a time through the buffers cost about 25 ns
-        // per sample, most of a frame's time at 1080p. Move whole rows instead
-        // and place the samples in arrays. The destination row is read first,
-        // so the other plane's samples between ours survive whatever the U/V
-        // order, and the span stops at the last sample, which the plane's
-        // buffer may end right after.
-        val sourceSpan = (rowBytes - 1) * source.pixelStride + 1
-        val destinationSpan = (rowBytes - 1) * destination.pixelStride + 1
-        val sourceRow = ByteArray(sourceSpan)
-        val destinationRow = ByteArray(destinationSpan)
-        for (row in 0 until rows) {
-            sourceBuffer.position(sourceStart + row * source.rowStride)
-            sourceBuffer.get(sourceRow)
-            val destinationOffset = destinationStart + row * destination.rowStride
-            destinationBuffer.position(destinationOffset)
-            destinationBuffer.get(destinationRow)
-            for (column in 0 until rowBytes) {
-                destinationRow[column * destination.pixelStride] = sourceRow[column * source.pixelStride]
-            }
-            destinationBuffer.position(destinationOffset)
-            destinationBuffer.put(destinationRow)
-        }
     }
 
     private fun codecSpecificData(format: MediaFormat): ByteArray {
@@ -282,12 +208,6 @@ internal class H264Encoder(
     private fun bitrateFor(width: Int, height: Int): Int =
         (width * height * fps * BITS_PER_PIXEL_PER_FRAME).toInt()
             .coerceIn(MIN_BITRATE, MAX_BITRATE)
-
-    private data class PlaneView(
-        val buffer: ByteBuffer,
-        val rowStride: Int,
-        val pixelStride: Int,
-    )
 
     companion object {
         private const val INPUT_TIMEOUT_US = 10_000L

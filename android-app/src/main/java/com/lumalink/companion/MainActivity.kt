@@ -1070,39 +1070,23 @@ class MainActivity : ComponentActivity() {
             }
             val planes = image.planes
             if (planes.size < 3) return
-            val nv21 = ByteArray(width * height * 3 / 2)
-            val yPlane = planes[0]
-            val yBuffer = yPlane.buffer.duplicate()
-            for (y in 0 until height) {
-                val sourceRow = (top + y) * yPlane.rowStride + left * yPlane.pixelStride
-                yBuffer.position(sourceRow)
-                yBuffer.get(nv21, y * width, width)
-            }
-            val chromaOffset = width * height
-            val uPlane = planes[1]
-            val vPlane = planes[2]
-            val uBuffer = uPlane.buffer.duplicate()
-            val vBuffer = vPlane.buffer.duplicate()
-            var outputIndex = chromaOffset
-            for (y in 0 until height / 2) {
-                val sourceY = top / 2 + y
-                for (x in 0 until width / 2) {
-                    val sourceX = left / 2 + x
-                    val uIndex = sourceY * uPlane.rowStride + sourceX * uPlane.pixelStride
-                    val vIndex = sourceY * vPlane.rowStride + sourceX * vPlane.pixelStride
-                    nv21[outputIndex++] = vBuffer.get(vIndex)
-                    nv21[outputIndex++] = uBuffer.get(uIndex)
-                }
-            }
-            val (frameData, frameWidth, frameHeight) = Nv21.rotate(
-                nv21,
-                width,
-                height,
-                rotationDegrees,
-            )
+            // Crop and turn each plane on its own, a row at a time, rather
+            // than building an NV21 frame a sample at a time (see Yuv420).
+            val chromaWidth = width / 2
+            val chromaHeight = height / 2
+            val y = Yuv420.crop(PlaneView.of(planes[0]), left, top, width, height)
+            val u = Yuv420.crop(PlaneView.of(planes[1]), left / 2, top / 2, chromaWidth, chromaHeight)
+            val v = Yuv420.crop(PlaneView.of(planes[2]), left / 2, top / 2, chromaWidth, chromaHeight)
+            val quarterTurn = rotationDegrees % 180 != 0
+            val frameWidth = if (quarterTurn) height else width
+            val frameHeight = if (quarterTurn) width else height
             val encoder = ensureVideoEncoder(frameWidth, frameHeight)
             requestKeyFrameIfWanted(encoder)
-            val packets = encoder.encode(frameData)
+            val packets = encoder.encode(
+                Yuv420.turn(y, width, height, rotationDegrees),
+                Yuv420.turn(u, chromaWidth, chromaHeight, rotationDegrees),
+                Yuv420.turn(v, chromaWidth, chromaHeight, rotationDegrees),
+            )
             publishEncodedPackets(packets, frameWidth, frameHeight, rotationDegrees, frameStartedAt)
         } catch (error: Exception) {
             Log.e(TAG, "Could not encode camera frame", error)
