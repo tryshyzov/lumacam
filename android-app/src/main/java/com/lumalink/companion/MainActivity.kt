@@ -1094,7 +1094,7 @@ class MainActivity : ComponentActivity() {
                     nv21[outputIndex++] = uBuffer.get(uIndex)
                 }
             }
-            val (frameData, frameWidth, frameHeight) = rotateNv21(
+            val (frameData, frameWidth, frameHeight) = Nv21.rotate(
                 nv21,
                 width,
                 height,
@@ -1156,77 +1156,6 @@ class MainActivity : ComponentActivity() {
             )
         }
         lastMeasuredFrameStartedAt = frameStartedAt
-    }
-
-    private fun rotateNv21(
-        source: ByteArray,
-        width: Int,
-        height: Int,
-        rotationDegrees: Int,
-    ): Triple<ByteArray, Int, Int> {
-        val rotation = ((rotationDegrees % 360) + 360) % 360
-        require(rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270) {
-            "Неподдерживаемый поворот кадра: $rotation°"
-        }
-        if (rotation == 0) return Triple(source, width, height)
-
-        val outputWidth = if (rotation == 90 || rotation == 270) height else width
-        val outputHeight = if (rotation == 90 || rotation == 270) width else height
-        val output = ByteArray(source.size)
-        val outputLumaSize = outputWidth * outputHeight
-
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val rotatedX: Int
-                val rotatedY: Int
-                when (rotation) {
-                    90 -> {
-                        rotatedX = height - 1 - y
-                        rotatedY = x
-                    }
-                    180 -> {
-                        rotatedX = width - 1 - x
-                        rotatedY = height - 1 - y
-                    }
-                    else -> {
-                        rotatedX = y
-                        rotatedY = width - 1 - x
-                    }
-                }
-                output[rotatedY * outputWidth + rotatedX] = source[y * width + x]
-            }
-        }
-
-        val chromaOffset = width * height
-        val chromaWidth = width / 2
-        val chromaHeight = height / 2
-        val outputChromaWidth = outputWidth / 2
-        for (y in 0 until chromaHeight) {
-            for (x in 0 until chromaWidth) {
-                val rotatedX: Int
-                val rotatedY: Int
-                when (rotation) {
-                    90 -> {
-                        rotatedX = chromaHeight - 1 - y
-                        rotatedY = x
-                    }
-                    180 -> {
-                        rotatedX = chromaWidth - 1 - x
-                        rotatedY = chromaHeight - 1 - y
-                    }
-                    else -> {
-                        rotatedX = y
-                        rotatedY = chromaWidth - 1 - x
-                    }
-                }
-                val sourceIndex = chromaOffset + (y * chromaWidth + x) * 2
-                val outputIndex =
-                    outputLumaSize + (rotatedY * outputChromaWidth + rotatedX) * 2
-                output[outputIndex] = source[sourceIndex]
-                output[outputIndex + 1] = source[sourceIndex + 1]
-            }
-        }
-        return Triple(output, outputWidth, outputHeight)
     }
 
     private fun toggleStreaming() {
