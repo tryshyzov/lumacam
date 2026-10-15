@@ -61,8 +61,53 @@ Name: "{autodesktop}\LumaLink Studio"; Filename: "{app}\LumaLinkStudio.exe"; \
 [Run]
 Filename: "{app}\LumaLinkStudio.exe"; Description: "Launch LumaLink Studio"; \
     Flags: postinstall nowait skipifsilent runasoriginaluser
+; An update started from the app (camera_studio/updates.py) starts it again.
+Filename: "{app}\LumaLinkStudio.exe"; Flags: nowait runasoriginaluser; Check: Relaunching
 
 [Code]
+const
+  { Held by LumaLink Studio while it runs; see camera_studio/updates.py. }
+  AppMutex = 'LumaLinkStudioRunning';
+  QuitWaitMs = 15000;
+
+function Relaunching: Boolean;
+begin
+  Result := Pos('/RELAUNCH', Uppercase(GetCmdTail)) > 0;
+end;
+
+{ The app quits right after starting an update; wait for it to go so its
+  files can be replaced. An interactive install asks to close it instead. }
+function InitializeSetup: Boolean;
+var
+  Waited: Integer;
+begin
+  Result := True;
+  Waited := 0;
+  while CheckForMutexes(AppMutex) do
+  begin
+    if WizardSilent then
+    begin
+      if Waited >= QuitWaitMs then
+      begin
+        Log('LumaLink Studio is still running; not updating.');
+        Result := False;
+        Exit;
+      end;
+      Sleep(250);
+      Waited := Waited + 250;
+    end
+    else
+    begin
+      if ActiveLanguage = 'russian' then
+        Result := MsgBox('LumaLink Studio запущена. Закройте её и нажмите «Повтор».', mbError, MB_RETRYCANCEL) = IDRETRY
+      else
+        Result := MsgBox('LumaLink Studio is running. Close it, then choose Retry.', mbError, MB_RETRYCANCEL) = IDRETRY;
+      if not Result then
+        Exit;
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
