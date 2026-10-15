@@ -193,9 +193,11 @@ internal class AppUpdater(
                             UpdateState.Failed(
                                 release,
                                 when {
+                                    // Google Play Protect stops APKs it has not reviewed;
+                                    // its "OK" arrives as an abort with this message.
+                                    status == PackageInstaller.STATUS_FAILURE_BLOCKED ||
+                                        message?.contains("VERIFICATION_FAILURE") == true -> BLOCKED
                                     status == PackageInstaller.STATUS_FAILURE_ABORTED -> null
-                                    // Google Play Protect stops APKs it has not reviewed.
-                                    status == PackageInstaller.STATUS_FAILURE_BLOCKED -> BLOCKED
                                     // The public statuses lump a key mismatch in with
                                     // other conflicts, such as an older version code.
                                     message?.contains("UPDATE_INCOMPATIBLE") == true -> SIGNATURE_MISMATCH
