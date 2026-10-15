@@ -6,6 +6,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import av  # noqa: E402
 from PIL import Image  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -215,7 +216,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(window.preview.is_paused())
 
         # New frames from the phone do not replace the still frame.
-        window.decoder = mock.Mock(decode=lambda _packet: [Image.new("RGB", (1280, 720), "red")])
+        red = av.VideoFrame.from_image(Image.new("RGB", (1280, 720), "red"))
+        window.decoder = mock.Mock(decode=lambda _packet: [red])
         window._receive_frame(b"packet")
         self.assertIs(camera.images[-1], still)
         self.assertTrue(window.frames.empty())
@@ -249,12 +251,12 @@ class MainWindowTests(unittest.TestCase):
             self.assertEqual(final.getpixel((632, 360)), (255, 255, 255))
 
             # Resuming fades the overlay out over the live picture.
-            live = Image.new("RGB", (1280, 720), (90, 90, 90))
+            live = av.VideoFrame.from_image(Image.new("RGB", (1280, 720), (90, 90, 90)))
             window.decoder = mock.Mock(decode=lambda _packet: [live])
             with mock.patch.object(ui, "correct_stream_orientation", lambda image: image):
                 window._toggle_pause()
                 window._receive_frame(b"packet")
-                self.assertIsNot(camera.images[-1], live)
+                self.assertIsInstance(camera.images[-1], Image.Image)
                 faded_background, resumed = window.resume_fade
                 window.resume_fade = (faded_background, resumed - 1.0)
                 window._receive_frame(b"packet")

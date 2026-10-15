@@ -661,7 +661,6 @@ class H264Decoder:
             decoded = self._codec.decode(self._av.Packet(packet))
         except self._av.error.InvalidDataError:
             return []
-        return [
-            frame.to_image()
-            for frame in decoded
-        ]
+        # Frames as decoded, still in YUV: the preview turns them into
+        # pictures and the virtual camera scales them straight from YUV.
+        return list(decoded)
