@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LumaLink Studio — камера телефона как веб-камера</title>
+  <meta name="description" content="Используйте камеру Android-телефона как веб-камеру на Windows и Mac: по USB или Wi-Fi, в Zoom, Telegram, Discord и OBS. Бесплатно и с открытым кодом.">
+  <meta property="og:title" content="LumaLink Studio">
+  <meta property="og:description" content="Камера Android-телефона как веб-камера для Windows и Mac.">
+  <meta property="og:image" content="assets/app-ru.jpg">
+  <meta name="theme-color" content="#1c1c1c">
+  <link rel="icon" href="assets/favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#">
+        <img src="assets/icon.png" alt="" width="32" height="32">
+        <span>LumaLink Studio</span>
+      </a>
+      <nav class="topnav">
+        <a href="#how" data-i18n="nav_how">Как это работает</a>
+        <a href="#download" data-i18n="nav_download">Скачать</a>
+        <a href="#faq" data-i18n="nav_faq">Вопросы</a>
+        <button class="lang" type="button" id="lang-toggle" aria-label="Switch to English">EN</button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap hero-inner">
+        <div class="hero-text">
+          <p class="eyebrow"><span class="rec" aria-hidden="true"></span><span data-i18n="eyebrow">Бесплатно и с открытым кодом</span></p>
+          <h1 data-i18n="hero_title">Камера телефона — веб‑камера для компьютера</h1>
+          <p class="lead" data-i18n="hero_lead">Подключите Android-телефон по USB или Wi-Fi и используйте его камеру в Zoom, Telegram, Discord и OBS. Фокус, экспозиция, ISO и баланс белого — прямо с компьютера.</p>
+          <div class="cta">
+            <a class="button primary" id="hero-download" href="#download" data-i18n="hero_cta">Скачать</a>
+            <a class="button" href="https://github.com/tryshyzov/lumacam" data-i18n="hero_source">Исходный код</a>
+          </div>
+          <p class="platforms" data-i18n="hero_platforms">Windows 10/11 · macOS 13+ (Apple Silicon и Intel) · Android 8+</p>
+        </div>
+        <figure class="hero-shot">
+          <img id="shot" src="assets/app-ru.jpg" width="1600" height="950" alt="Окно LumaLink Studio с настройками камеры" data-i18n-alt="shot_alt">
+        </figure>
+      </div>
+    </section>
+
+    <section id="how" class="section">
+      <div class="wrap">
+        <h2 data-i18n="how_title">Как это работает</h2>
+        <ol class="steps">
+          <li>
+            <span class="step-num">1</span>
+            <h3 data-i18n="step1_title">Телефон снимает</h3>
+            <p data-i18n="step1_text">Приложение LumaLink Companion берёт видео с камеры телефона и сжимает его аппаратным кодеком H.264.</p>
+          </li>
+          <li>
+            <span class="step-num">2</span>
+            <h3 data-i18n="step2_title">Видео идёт по USB или Wi-Fi</h3>
+            <p data-i18n="step2_text">По кабелю — через USB-модем или отладку по USB, без интернета. По Wi-Fi — в пределах одной домашней сети.</p>
+          </li>
+          <li>
+            <span class="step-num">3</span>
+            <h3 data-i18n="step3_title">Компьютер показывает</h3>
+            <p data-i18n="step3_text">LumaLink Studio показывает картинку и передаёт её в виртуальную камеру, которую видят Zoom, Telegram, Discord, браузеры и OBS.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2 data-i18n="features_title">Что умеет</h2>
+        <div class="features">
+          <article>
+            <h3 data-i18n="f1_title">Ручные настройки камеры</h3>
+            <p data-i18n="f1_text">Автофокус или ручной фокус, экспозиция, ISO, баланс белого, зум, основная или фронтальная камера — с компьютера.</p>
+          </article>
+          <article>
+            <h3 data-i18n="f2_title">До 1080p и 60 кадров</h3>
+            <p data-i18n="f2_text">Профили 480p, 720p и 1080p при 30 или 60 кадрах в секунду. Что именно получится, зависит от телефона.</p>
+          </article>
+          <article>
+            <h3 data-i18n="f3_title">Своя виртуальная камера</h3>
+            <p data-i18n="f3_text">На Windows установщик добавляет LumaLink Camera — без драйверов ядра. На Mac камера пока работает через OBS Virtual Camera.</p>
+          </article>
+          <article>
+            <h3 data-i18n="f4_title">USB в обход VPN</h3>
+            <p data-i18n="f4_text">Если VPN блокирует локальную сеть, программа сама переключается на ADB, и подключение идёт прямо по кабелю.</p>
+          </article>
+          <article>
+            <h3 data-i18n="f5_title">Низкая задержка</h3>
+            <p data-i18n="f5_text">Телефон отправляет только свежий кадр и ждёт подтверждения, поэтому видео не накапливает отставание.</p>
+          </article>
+          <article>
+            <h3 data-i18n="f6_title">Пауза и заставка</h3>
+            <p data-i18n="f6_text">Остановите картинку одной кнопкой. Пока телефон не подключён, виртуальная камера показывает аккуратную заставку.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="download" class="section">
+      <div class="wrap">
+        <h2 data-i18n="download_title">Скачать</h2>
+        <p class="section-lead"><span data-i18n="download_lead">Нужны две программы: LumaLink Studio на компьютер и LumaLink Companion на телефон.</span> <span id="version"></span></p>
+        <div class="downloads">
+          <article class="download" data-asset="windows">
+            <h3>Windows</h3>
+            <p data-i18n="dl_windows">Установщик с виртуальной камерой LumaLink Camera. Windows 10 и 11.</p>
+            <a class="button primary" href="https://github.com/tryshyzov/lumacam/releases/latest" data-i18n="dl_button">Скачать</a>
+          </article>
+          <article class="download" data-asset="mac-arm">
+            <h3 data-i18n="dl_mac_arm_title">Mac с Apple Silicon</h3>
+            <p data-i18n="dl_mac_arm">M1 и новее. macOS 13 Ventura или новее.</p>
+            <a class="button primary" href="https://github.com/tryshyzov/lumacam/releases/latest" data-i18n="dl_button">Скачать</a>
+          </article>
+          <article class="download" data-asset="mac-intel">
+            <h3 data-i18n="dl_mac_intel_title">Mac с Intel</h3>
+            <p data-i18n="dl_mac_intel">macOS 13 Ventura или новее.</p>
+            <a class="button primary" href="https://github.com/tryshyzov/lumacam/releases/latest" data-i18n="dl_button">Скачать</a>
+          </article>
+          <article class="download" data-asset="android">
+            <h3 data-i18n="dl_android_title">Телефон Android</h3>
+            <p data-i18n="dl_android">LumaLink Companion. Android 8.0 или новее.</p>
+            <a class="button primary" href="https://github.com/tryshyzov/lumacam/releases/latest" data-i18n="dl_button">Скачать</a>
+          </article>
+        </div>
+        <p class="note" data-i18n="dl_note">Приложение для iPhone пока не готово. Mac-версия не подписана сертификатом Apple: в первый раз откройте её через правый клик → «Открыть».</p>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <h2 data-i18n="setup_title">Как подключить</h2>
+        <div class="setup">
+          <div>
+            <h3 data-i18n="setup_usb_title">По USB</h3>
+            <ol>
+              <li data-i18n="setup_usb_1">Подключите телефон кабелем.</li>
+              <li data-i18n="setup_usb_2">На Windows включите на телефоне «USB-модем», на Mac — «Отладку по USB»: модем большинства телефонов macOS не понимает.</li>
+              <li data-i18n="setup_usb_3">В LumaLink Companion выберите USB и нажмите «Начать трансляцию».</li>
+              <li data-i18n="setup_usb_4">В LumaLink Studio выберите USB и нажмите «Подключить камеру».</li>
+            </ol>
+          </div>
+          <div>
+            <h3 data-i18n="setup_wifi_title">По Wi-Fi</h3>
+            <ol>
+              <li data-i18n="setup_wifi_1">Телефон и компьютер должны быть в одной сети.</li>
+              <li data-i18n="setup_wifi_2">В LumaLink Studio выберите Wi-Fi и нажмите «Подключить камеру».</li>
+              <li data-i18n="setup_wifi_3">В LumaLink Companion выберите Wi-Fi и нажмите «Начать трансляцию» — телефон сам найдёт компьютер.</li>
+              <li data-i18n="setup_wifi_4">Если не нашёл, введите на телефоне IP-адрес, который показывает LumaLink Studio.</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section">
+      <div class="wrap narrow">
+        <h2 data-i18n="faq_title">Вопросы</h2>
+        <details>
+          <summary data-i18n="q1">Это безопасно?</summary>
+          <p data-i18n="a1">Видео передаётся без шифрования и без пароля: любое устройство в той же сети может подключиться к трансляции. Используйте Wi-Fi только в доверенной сети и останавливайте трансляцию, когда она не нужна. По USB видео не выходит за пределы кабеля.</p>
+        </details>
+        <details>
+          <summary data-i18n="q2">Почему не подключается при включённом VPN?</summary>
+          <p data-i18n="a2">VPN с блокировкой локальной сети не пропускает трафик к телефону. Для USB включите на телефоне «Отладку по USB» — программа пойдёт через ADB в обход VPN. Для Wi-Fi добавьте LumaLink Studio в исключения VPN.</p>
+        </details>
+        <details>
+          <summary data-i18n="q3">Есть ли задержка?</summary>
+          <p data-i18n="a3">Небольшая есть всегда: камера, кодирование, передача и показ занимают время. LumaLink держит её минимальной, не копя очередь кадров.</p>
+        </details>
+        <details>
+          <summary data-i18n="q4">Мой телефон поддерживает ручной фокус и ISO?</summary>
+          <p data-i18n="a4">Зависит от телефона. Приложение применяет только то, что умеет камера, и ограничивает настройки её возможностями.</p>
+        </details>
+        <details>
+          <summary data-i18n="q5">А iPhone?</summary>
+          <p data-i18n="a5">Приложение для iOS запланировано, но пока не сделано.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span>LumaLink Studio · <span data-i18n="footer_license">Лицензия Apache 2.0</span></span>
+      <a href="https://github.com/tryshyzov/lumacam">GitHub</a>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>
