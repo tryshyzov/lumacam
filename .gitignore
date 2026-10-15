@@ -31,3 +31,6 @@ virtualcam/Build/
 
 # Personal design mockups (for Figma), kept out of the repository
 design/
+
+# Built by macvirtualcam/build.sh
+macvirtualcam/build/
