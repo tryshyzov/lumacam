@@ -6,7 +6,7 @@ from typing import Protocol
 
 import numpy as np
 
-from camera_studio import lumalink_camera
+from camera_studio import lumalink_camera, mac_camera
 
 OUTPUT_WIDTH = 1280
 OUTPUT_HEIGHT = 720
@@ -43,12 +43,17 @@ class VirtualCameraSession:
 
     def __enter__(self) -> VirtualCameraSession:
         camera_factory = self._camera_factory
-        if camera_factory is None and lumalink_camera.is_registered():
+        if camera_factory is None:
             # The project's own camera needs no third-party backend.
-            camera = lumalink_camera.LumaLinkCameraDevice()
-            self._camera = camera
-            self.device = camera.device
-            return self
+            own_camera: CameraDevice | None = None
+            if MACOS and mac_camera.is_installed():
+                own_camera = mac_camera.MacCameraDevice()
+            elif not MACOS and lumalink_camera.is_registered():
+                own_camera = lumalink_camera.LumaLinkCameraDevice()
+            if own_camera is not None:
+                self._camera = own_camera
+                self.device = own_camera.device
+                return self
         if camera_factory is None:
             try:
                 import pyvirtualcam

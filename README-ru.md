@@ -48,7 +48,7 @@ python3 -m pip install -r requirements.txt pyinstaller
 scripts/build-macos.sh
 ```
 
-Скрипт создаёт `dist/LumaLink Studio.app` и `dist/LumaLinkStudio-<версия>-macos.dmg`. Если установлен Xcode, скрипт также компилирует `assets/LumaLinkStudio.icon` (значок Icon Composer), и значок подстраивается под светлое, тёмное, тонированное и прозрачное оформление macOS; без Xcode остаётся обычный значок `.icns`. Приложение подписано без Developer ID, поэтому на другом Mac в первый раз откройте его через правый клик → **Открыть**. При первом запуске macOS спросит, разрешить ли находить устройства в локальных сетях: разрешите, иначе телефон не подключится. Своя виртуальная камера LumaLink Camera пока есть только для Windows: на macOS виртуальная камера работает через OBS Virtual Camera (OBS Studio 30+, один раз запущенную из OBS).
+Скрипт создаёт `dist/LumaLink Studio.app` и `dist/LumaLinkStudio-<версия>-macos.dmg`. Если установлен Xcode, скрипт также компилирует `assets/LumaLinkStudio.icon` (значок Icon Composer), и значок подстраивается под светлое, тёмное, тонированное и прозрачное оформление macOS; без Xcode остаётся обычный значок `.icns`. Приложение подписано без Developer ID, поэтому на другом Mac в первый раз откройте его через правый клик → **Открыть**. При первом запуске macOS спросит, разрешить ли находить устройства в локальных сетях: разрешите, иначе телефон не подключится. В сборку входит и LumaLink Camera для macOS — расширение камеры ([`macvirtualcam/`](./macvirtualcam/)), но macOS устанавливает его только из приложения, подписанного командой Apple Developer Program; до тех пор виртуальная камера на macOS работает через OBS Virtual Camera (OBS Studio 30+, один раз запущенную из OBS).
 
 ## Подключение Android камеры
 

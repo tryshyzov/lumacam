@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-from camera_studio import lumalink_camera
+from camera_studio import camera_backend, lumalink_camera
 from camera_studio.camera_backend import VirtualCameraSession
 from camera_studio.lumalink_camera import LumaLinkCameraDevice, pack_frame
 from camera_studio.virtual_camera import (
@@ -172,6 +172,7 @@ class BackendSelectionTests(unittest.TestCase):
                 self.closed = True
 
         with (
+            mock.patch.object(camera_backend, "MACOS", False),
             mock.patch.object(lumalink_camera, "is_registered", return_value=True),
             mock.patch.object(lumalink_camera, "LumaLinkCameraDevice", FakeDevice),
         ):
