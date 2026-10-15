@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import queue
 import sys
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QPixmap
+from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from camera_studio import __version__
+from camera_studio import __version__, updates
 from camera_studio.i18n import LANGUAGE_NAMES, LANGUAGES, format_number, translate
 from camera_studio.pause_frame import (
     PAUSE_IN_SECONDS,
@@ -73,6 +75,8 @@ from camera_studio.widgets import (
 STREAM_PORT = 8765
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
+UPDATE_FIRST_CHECK_DELAY_MS = 3_000
+UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 # Room for the macOS close, minimize and zoom buttons drawn over the title bar.
 MACOS_WINDOW_BUTTONS_WIDTH = 78
 RESIZE_MARGIN = 5
@@ -212,6 +216,12 @@ class MainWindow(QWidget):
         self.profile_index = DEFAULT_PROFILE
         self._texts: list[tuple[Callable[[str], None], str, bool]] = []
         self._ready = False
+        # Updates: results from the checking and downloading threads.
+        self.update_messages: queue.Queue[tuple] = queue.Queue()
+        self.available_update: updates.Update | None = None
+        self.update_state = "none"  # none, available, downloading, installing, failed
+        self.update_detail = ""
+        self.update_checked_manually = False
 
         self.setWindowTitle("LumaLink Studio")
         logo = Path(__file__).resolve().parents[1] / "assets" / "LumaCam.png"
@@ -250,6 +260,13 @@ class MainWindow(QWidget):
         self.retranslate()
         self.setFocus()
         self.poll_timer.start()
+
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(UPDATE_CHECK_INTERVAL_MS)
+        self.update_timer.timeout.connect(self.check_for_updates)
+        if update_checks_enabled():
+            self.update_timer.start()
+            QTimer.singleShot(UPDATE_FIRST_CHECK_DELAY_MS, self.check_for_updates)
 
     # ------------------------------------------------------------------ layout
 
@@ -503,6 +520,22 @@ class MainWindow(QWidget):
         foot_layout = QVBoxLayout(foot)
         foot_layout.setContentsMargins(24, 16, 24, 20)
         foot_layout.setSpacing(2)
+
+        self.update_banner = QWidget(foot)
+        banner = QVBoxLayout(self.update_banner)
+        banner.setContentsMargins(0, 0, 0, 14)
+        banner.setSpacing(8)
+        self.update_label = self._label(role="strong", wrap=True)
+        banner.addWidget(self.update_label)
+        self.update_button = QPushButton(self)
+        self.update_button.setObjectName("action")
+        self.update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.update_button.clicked.connect(self._update_clicked)
+        banner.addWidget(self.update_button)
+        self.update_banner.hide()
+        foot_layout.addWidget(self.update_banner)
+
         foot_layout.addWidget(self._label("vcam", role="strong"))
         self.virtual_camera_note = self._label(role="secondary", wrap=True)
         foot_layout.addWidget(self.virtual_camera_note)
@@ -535,6 +568,15 @@ class MainWindow(QWidget):
         about = self._label(role="secondary")
         about.setText(f"LumaLink Studio {__version__}")
         layout.addWidget(about)
+        self.check_updates_button = QPushButton(self)
+        self.check_updates_button.setObjectName("textButton")
+        self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_updates_button.clicked.connect(lambda: self.check_for_updates(manual=True))
+        self._bind(self.check_updates_button.setText, "update_check")
+        layout.addWidget(self.check_updates_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.update_check_label = self._label(role="secondary", wrap=True)
+        self.update_check_label.hide()
+        layout.addWidget(self.update_check_label)
 
     def _connect_settings(self) -> None:
         for switch, name in (
@@ -649,6 +691,7 @@ class MainWindow(QWidget):
         for setter, key, upper in self._texts:
             text = self.t(key)
             setter(text.upper() if upper else text)
+        self._refresh_update()
         self.iso_seg.set_labels(
             {value: self.t("auto") if value == "auto" else value for value in ISO_VALUES}
         )
@@ -1044,6 +1087,7 @@ class MainWindow(QWidget):
             output.stop()
 
     def _poll_stream(self) -> None:
+        self._poll_updates()
         changed = False
         while True:
             try:
@@ -1101,13 +1145,132 @@ class MainWindow(QWidget):
         if changed:
             self._refresh()
 
+    # ---------------------------------------------------------------- updates
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        """Ask GitHub for a newer release in the background."""
+        if self.update_state in ("downloading", "installing"):
+            return
+        self.update_checked_manually = manual
+        if manual:
+            self.update_check_label.setText(self.t("update_checking"))
+            self.update_check_label.show()
+
+        def work() -> None:
+            try:
+                self.update_messages.put(("checked", updates.check()))
+            except Exception as error:  # offline, rate-limited, unexpected JSON
+                self.update_messages.put(("check_failed", str(error)))
+
+        threading.Thread(target=work, name="LumaLink update check", daemon=True).start()
+
+    def _update_clicked(self) -> None:
+        update = self.available_update
+        if update is None:
+            return
+        if not updates.can_update_in_place():
+            # Running from source: the installer would not replace this copy.
+            QDesktopServices.openUrl(QUrl(update.page))
+            return
+        self.update_state = "downloading"
+        self.update_detail = self.t("update_downloading", percent=0)
+        self._refresh_update()
+        cancelled = threading.Event()
+        self.update_cancel = cancelled
+
+        def work() -> None:
+            try:
+                path = updates.download(
+                    update,
+                    lambda done, total: self.update_messages.put(("progress", done, total)),
+                    cancelled,
+                )
+                self.update_messages.put(("downloaded", path))
+            except Exception as error:
+                self.update_messages.put(("failed", str(error)))
+
+        threading.Thread(target=work, name="LumaLink update download", daemon=True).start()
+
+    def _poll_updates(self) -> None:
+        while True:
+            try:
+                message = self.update_messages.get_nowait()
+            except queue.Empty:
+                return
+            kind = message[0]
+            if kind == "checked":
+                update = message[1]
+                if update is not None:
+                    self.available_update = update
+                    if self.update_state in ("none", "failed"):
+                        self.update_state = "available"
+                if self.update_checked_manually:
+                    self.update_check_label.setText(
+                        self.t("update_available", version=update.version)
+                        if update is not None
+                        else self.t("update_latest")
+                    )
+            elif kind == "check_failed":
+                if self.update_checked_manually:
+                    self.update_check_label.setText(self.t("update_check_failed"))
+            elif kind == "progress":
+                _, done, total = message
+                percent = round(done * 100 / total) if total else 0
+                self.update_detail = self.t("update_downloading", percent=percent)
+            elif kind == "downloaded":
+                self.update_state = "installing"
+                self.update_detail = self.t("update_installing")
+                self._refresh_update()
+                try:
+                    if updates.install(message[1]):
+                        self._disconnect()
+                        QApplication.quit()
+                        return
+                    self.update_state = "available"  # the user declined; try again later
+                except Exception as error:
+                    self.update_state = "failed"
+                    self.update_detail = self.t("update_failed", error=error)
+            elif kind == "failed":
+                self.update_state = "failed"
+                self.update_detail = self.t("update_failed", error=message[1])
+            self._refresh_update()
+
+    def _refresh_update(self) -> None:
+        """Show the update banner for the current state."""
+        update = self.available_update
+        if update is None or self.update_state == "none":
+            self.update_banner.hide()
+            return
+        busy = self.update_state in ("downloading", "installing")
+        if busy:
+            self.update_label.setText(self.update_detail)
+        elif self.update_state == "failed":
+            self.update_label.setText(self.update_detail)
+        else:
+            self.update_label.setText(self.t("update_available", version=update.version))
+        if not updates.can_update_in_place():
+            button = "update_open"
+        elif self.update_state == "failed":
+            button = "update_retry"
+        else:
+            button = "update_install"
+        self.update_button.setText(self.t(button))
+        self.update_button.setEnabled(not busy)
+        self.update_banner.show()
+
     def closeEvent(self, event) -> None:  # noqa: N802
         self.poll_timer.stop()
         self._disconnect()
         super().closeEvent(event)
 
 
+def update_checks_enabled() -> bool:
+    """The packaged app checks for updates; from source only when asked to."""
+    return updates.can_update_in_place() or os.environ.get("LUMALINK_CHECK_UPDATES") == "1"
+
+
 def run() -> None:
+    updates.hold_app_mutex()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE_SHEET)
