@@ -187,17 +187,17 @@ internal class AppUpdater(
                     // this is rarely seen.
                     PackageInstaller.STATUS_SUCCESS -> report(UpdateState.UpToDate)
                     else -> {
-                        Log.w(TAG, "Install finished with status $status: " +
-                            intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
+                        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                        Log.w(TAG, "Install finished with status $status: $message")
                         report(
                             UpdateState.Failed(
                                 release,
-                                when (status) {
-                                    PackageInstaller.STATUS_FAILURE_ABORTED -> null
-                                    PackageInstaller.STATUS_FAILURE_CONFLICT,
-                                    PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
-                                    -> SIGNATURE_MISMATCH
-                                    else -> intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                                when {
+                                    status == PackageInstaller.STATUS_FAILURE_ABORTED -> null
+                                    // The public statuses lump a key mismatch in with
+                                    // other conflicts, such as an older version code.
+                                    message?.contains("UPDATE_INCOMPATIBLE") == true -> SIGNATURE_MISMATCH
+                                    else -> message ?: "status $status"
                                 },
                             ),
                         )
