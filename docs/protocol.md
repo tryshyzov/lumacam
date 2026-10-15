@@ -56,6 +56,10 @@ Rules the phone app must follow:
 - After a dropped frame the frames that depended on it no longer decode
   cleanly. A sender should resume with a key frame (request one from the
   encoder) instead of sending the broken frames.
+- A new connection also starts with a key frame. The Android app holds back
+  other frames after a gap and when a connection starts, asks the encoder for
+  a key frame (at most every 300 ms) and sends it with SPS and PPS in front
+  (`LatestFrame.kt`).
 
 Orientation: the desktop rotates every decoded picture by 180° before showing
 it. This compensates for how the Android app feeds frames to its encoder. A new
@@ -63,6 +67,8 @@ phone app has to deliver the same orientation, that is, upside down relative
 to the scene, or the desktop needs a per-client setting.
 
 The desktop treats a connection as broken after 5 seconds without a frame.
+The phone likewise gives up after 5 seconds without an acknowledgement, so a
+computer that vanished without closing the connection is noticed.
 
 ## Camera settings
 
