@@ -35,8 +35,13 @@ if xcrun --find actool >/dev/null 2>&1; then
     xcrun actool assets/LumaLinkStudio.icon \
         --compile "$icon_build" --platform macosx --minimum-deployment-target 13.0 \
         --app-icon LumaLinkStudio --output-partial-info-plist "$icon_build/icon.plist" \
-        --errors --warnings >/dev/null
-    cp "$icon_build/Assets.car" "$app/Contents/Resources/"
+        --errors --warnings >/dev/null || true
+    # Xcode before 26 has actool but cannot read Icon Composer icons.
+    if [ -f "$icon_build/Assets.car" ]; then
+        cp "$icon_build/Assets.car" "$app/Contents/Resources/"
+    else
+        echo "This Xcode cannot compile assets/LumaLinkStudio.icon: building with the .icns icon only" >&2
+    fi
     rm -rf "$icon_build"
 else
     echo "Xcode not found: building with the .icns icon only" >&2
