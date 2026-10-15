@@ -14,8 +14,16 @@ internal class H264Encoder(
     private val width: Int,
     private val height: Int,
     private val fps: Int,
+    surfaceInput: Boolean = false,
 ) {
     private val codec: MediaCodec
+
+    /**
+     * With [surfaceInput], frames are drawn into this surface by
+     * [GpuCameraPipeline] instead of being copied in through [encode], and the
+     * output is collected with [drain].
+     */
+    val inputSurface: android.view.Surface?
     private var codecConfig = ByteArray(0)
     // Whether the next codec-config buffer starts a new SPS/PPS set rather
     // than continuing one the encoder split over several buffers.
@@ -30,7 +38,11 @@ internal class H264Encoder(
             .apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+                    if (surfaceInput) {
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                    } else {
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                    },
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height))
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
@@ -47,6 +59,7 @@ internal class H264Encoder(
             ?: throw IllegalStateException("В телефоне нет H.264-кодировщика для ${width}x$height")
         codec = MediaCodec.createByCodecName(codecName)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        inputSurface = if (surfaceInput) codec.createInputSurface() else null
         codec.start()
         Log.i(TAG, "Using H.264 encoder $codecName for ${width}x$height at $fps FPS")
     }
@@ -93,6 +106,9 @@ internal class H264Encoder(
             )
         }
     }
+
+    /** The frames encoded so far from what was drawn into [inputSurface]. */
+    fun drain(): List<EncodedFrame> = drainOutput()
 
     private fun drainOutput(): List<EncodedFrame> {
         val packets = mutableListOf<EncodedFrame>()
@@ -153,6 +169,7 @@ internal class H264Encoder(
             codec.stop()
         } finally {
             codec.release()
+            inputSurface?.release()
         }
     }
 
