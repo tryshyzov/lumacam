@@ -14,6 +14,7 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Gravity
+import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
@@ -31,6 +32,7 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -88,6 +90,20 @@ class MainActivity : ComponentActivity() {
     private var videoEncoder: H264Encoder? = null
     private var gpuCameraPipeline: GpuCameraPipeline? = null
     private var gpuFailed = false
+    private var copyingAnalysisUseCase: ImageAnalysis? = null
+
+    /** Which way up the phone is held (see [HeldRotation]); the video follows it. */
+    private var heldRotation = HeldRotation.INITIAL
+    private val orientationListener by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(degrees: Int) {
+                val next = HeldRotation.snap(degrees, heldRotation)
+                if (next == heldRotation) return
+                heldRotation = next
+                applyStreamRotation()
+            }
+        }
+    }
     // Set by the network senders when they need a key frame; the camera thread
     // asks the encoder for one, at most every KEY_FRAME_REQUEST_INTERVAL_MS
     // so a slow link does not turn every frame into a large key frame.
@@ -123,6 +139,9 @@ class MainActivity : ComponentActivity() {
         // For comparing the two paths on one phone:
         // adb shell am start -n com.lumalink.companion/.MainActivity --ez force_copy true
         gpuFailed = intent.getBooleanExtra(EXTRA_FORCE_COPY, false)
+        // For checking every orientation on a phone lying flat, where the
+        // sensor keeps it: --ei held_rotation 0..3 (a Surface.ROTATION_*).
+        heldRotation = intent.getIntExtra(EXTRA_HELD_ROTATION, heldRotation).takeIf { it in 0..3 } ?: heldRotation
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
         // Debug builds are signed with another key and cannot take a release over them.
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
@@ -137,6 +156,16 @@ class MainActivity : ComponentActivity() {
         } else {
             requestCameraPermission.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (orientationListener.canDetectOrientation()) orientationListener.enable()
+    }
+
+    override fun onPause() {
+        orientationListener.disable()
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -659,12 +688,16 @@ class MainActivity : ComponentActivity() {
         try {
             provider.unbindAll()
             activeCamera = null
+            copyingAnalysisUseCase = null
             activeCamera = if (gpu != null) {
                 selector.filter(provider.availableCameraInfos).firstOrNull()?.let { info ->
                     gpu.setCamera(
                         info.sensorRotationDegrees,
                         lensFacing == CameraSelector.LENS_FACING_FRONT,
                         analysisSize(requestedResolution),
+                    )
+                    gpu.setStreamRotation(
+                        info.getSensorRotationDegrees(HeldRotation.streamTarget(heldRotation)),
                     )
                 }
                 val group = UseCaseGroup.Builder()
@@ -673,7 +706,8 @@ class MainActivity : ComponentActivity() {
                     .build()
                 provider.bindToLifecycle(this, selector, group)
             } else {
-                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange))
+                val info = selector.filter(provider.availableCameraInfos).firstOrNull()
+                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange, info))
             }
             cameraReady = true
             applyCameraSettings(JSONObject().apply {
@@ -699,10 +733,15 @@ class MainActivity : ComponentActivity() {
     }
 
     /** The CPU path: camera frames copied into the encoder (see [analyzeFrame]). */
-    private fun copyingAnalysis(fpsRange: Range<Int>): ImageAnalysis {
+    private fun copyingAnalysis(fpsRange: Range<Int>, info: CameraInfo?): ImageAnalysis {
+        val target = HeldRotation.streamTarget(heldRotation)
+        // CameraX reads the resolution in the target rotation's orientation:
+        // given landscape for a portrait stream, it picked a 4:3 size instead.
+        val size = analysisSize(requestedResolution)
+        val portrait = (info?.getSensorRotationDegrees(target) ?: 0) % 180 != 0
         val analysisBuilder = ImageAnalysis.Builder()
-            .setTargetResolution(analysisSize(requestedResolution))
-            .setTargetRotation(Surface.ROTATION_90)
+            .setTargetResolution(if (portrait) Size(size.height, size.width) else size)
+            .setTargetRotation(target)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -712,7 +751,21 @@ class MainActivity : ComponentActivity() {
             .build()
             .also { useCase ->
                 useCase.setAnalyzer(cameraExecutor, ::analyzeFrame)
+                copyingAnalysisUseCase = useCase
             }
+    }
+
+    /**
+     * Turn the video to the way the phone is now held. CameraX reports the
+     * turn for the copying path (see [analyzeFrame]); the GPU path is told it.
+     * A quarter turn changes the video's shape, so the next frame starts a
+     * new encoder.
+     */
+    private fun applyStreamRotation() {
+        val target = HeldRotation.streamTarget(heldRotation)
+        copyingAnalysisUseCase?.targetRotation = target
+        val info = activeCamera?.cameraInfo ?: return
+        if (!gpuFailed) gpuCameraPipeline?.setStreamRotation(info.getSensorRotationDegrees(target))
     }
 
     private fun gpuPipeline(): GpuCameraPipeline =
@@ -1017,39 +1070,23 @@ class MainActivity : ComponentActivity() {
             }
             val planes = image.planes
             if (planes.size < 3) return
-            val nv21 = ByteArray(width * height * 3 / 2)
-            val yPlane = planes[0]
-            val yBuffer = yPlane.buffer.duplicate()
-            for (y in 0 until height) {
-                val sourceRow = (top + y) * yPlane.rowStride + left * yPlane.pixelStride
-                yBuffer.position(sourceRow)
-                yBuffer.get(nv21, y * width, width)
-            }
-            val chromaOffset = width * height
-            val uPlane = planes[1]
-            val vPlane = planes[2]
-            val uBuffer = uPlane.buffer.duplicate()
-            val vBuffer = vPlane.buffer.duplicate()
-            var outputIndex = chromaOffset
-            for (y in 0 until height / 2) {
-                val sourceY = top / 2 + y
-                for (x in 0 until width / 2) {
-                    val sourceX = left / 2 + x
-                    val uIndex = sourceY * uPlane.rowStride + sourceX * uPlane.pixelStride
-                    val vIndex = sourceY * vPlane.rowStride + sourceX * vPlane.pixelStride
-                    nv21[outputIndex++] = vBuffer.get(vIndex)
-                    nv21[outputIndex++] = uBuffer.get(uIndex)
-                }
-            }
-            val (frameData, frameWidth, frameHeight) = rotateNv21(
-                nv21,
-                width,
-                height,
-                rotationDegrees,
-            )
+            // Crop and turn each plane on its own, a row at a time, rather
+            // than building an NV21 frame a sample at a time (see Yuv420).
+            val chromaWidth = width / 2
+            val chromaHeight = height / 2
+            val y = Yuv420.crop(PlaneView.of(planes[0]), left, top, width, height)
+            val u = Yuv420.crop(PlaneView.of(planes[1]), left / 2, top / 2, chromaWidth, chromaHeight)
+            val v = Yuv420.crop(PlaneView.of(planes[2]), left / 2, top / 2, chromaWidth, chromaHeight)
+            val quarterTurn = rotationDegrees % 180 != 0
+            val frameWidth = if (quarterTurn) height else width
+            val frameHeight = if (quarterTurn) width else height
             val encoder = ensureVideoEncoder(frameWidth, frameHeight)
             requestKeyFrameIfWanted(encoder)
-            val packets = encoder.encode(frameData)
+            val packets = encoder.encode(
+                Yuv420.turn(y, width, height, rotationDegrees),
+                Yuv420.turn(u, chromaWidth, chromaHeight, rotationDegrees),
+                Yuv420.turn(v, chromaWidth, chromaHeight, rotationDegrees),
+            )
             publishEncodedPackets(packets, frameWidth, frameHeight, rotationDegrees, frameStartedAt)
         } catch (error: Exception) {
             Log.e(TAG, "Could not encode camera frame", error)
@@ -1103,77 +1140,6 @@ class MainActivity : ComponentActivity() {
             )
         }
         lastMeasuredFrameStartedAt = frameStartedAt
-    }
-
-    private fun rotateNv21(
-        source: ByteArray,
-        width: Int,
-        height: Int,
-        rotationDegrees: Int,
-    ): Triple<ByteArray, Int, Int> {
-        val rotation = ((rotationDegrees % 360) + 360) % 360
-        require(rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270) {
-            "Неподдерживаемый поворот кадра: $rotation°"
-        }
-        if (rotation == 0) return Triple(source, width, height)
-
-        val outputWidth = if (rotation == 90 || rotation == 270) height else width
-        val outputHeight = if (rotation == 90 || rotation == 270) width else height
-        val output = ByteArray(source.size)
-        val outputLumaSize = outputWidth * outputHeight
-
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val rotatedX: Int
-                val rotatedY: Int
-                when (rotation) {
-                    90 -> {
-                        rotatedX = height - 1 - y
-                        rotatedY = x
-                    }
-                    180 -> {
-                        rotatedX = width - 1 - x
-                        rotatedY = height - 1 - y
-                    }
-                    else -> {
-                        rotatedX = y
-                        rotatedY = width - 1 - x
-                    }
-                }
-                output[rotatedY * outputWidth + rotatedX] = source[y * width + x]
-            }
-        }
-
-        val chromaOffset = width * height
-        val chromaWidth = width / 2
-        val chromaHeight = height / 2
-        val outputChromaWidth = outputWidth / 2
-        for (y in 0 until chromaHeight) {
-            for (x in 0 until chromaWidth) {
-                val rotatedX: Int
-                val rotatedY: Int
-                when (rotation) {
-                    90 -> {
-                        rotatedX = chromaHeight - 1 - y
-                        rotatedY = x
-                    }
-                    180 -> {
-                        rotatedX = chromaWidth - 1 - x
-                        rotatedY = chromaHeight - 1 - y
-                    }
-                    else -> {
-                        rotatedX = y
-                        rotatedY = chromaWidth - 1 - x
-                    }
-                }
-                val sourceIndex = chromaOffset + (y * chromaWidth + x) * 2
-                val outputIndex =
-                    outputLumaSize + (rotatedY * outputChromaWidth + rotatedX) * 2
-                output[outputIndex] = source[sourceIndex]
-                output[outputIndex + 1] = source[sourceIndex + 1]
-            }
-        }
-        return Triple(output, outputWidth, outputHeight)
     }
 
     private fun toggleStreaming() {
@@ -1272,6 +1238,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
         private const val FRAME_INTERVAL_TOLERANCE = 0.75
         private const val EXTRA_FORCE_COPY = "force_copy"
+        private const val EXTRA_HELD_ROTATION = "held_rotation"
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val MODE_USB = "USB"
