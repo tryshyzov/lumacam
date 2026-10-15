@@ -19,7 +19,7 @@ local.properties
 *.jks
 *.keystore
 
-# Downloaded by scripts/fetch-platform-tools.ps1
+# Downloaded by scripts/fetch-platform-tools.ps1 and .sh
 vendor/platform-tools/
 
 # Editor and local tool state

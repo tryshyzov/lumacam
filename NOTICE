@@ -5,9 +5,9 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Third-party components:
 
-- Android SDK Platform-Tools (adb), bundled with the Windows executable.
-  Copyright The Android Open Source Project. Apache License 2.0; the full
-  notices ship in vendor/platform-tools/NOTICE.txt.
+- Android SDK Platform-Tools (adb), bundled with the desktop app on Windows
+  and macOS. Copyright The Android Open Source Project. Apache License 2.0;
+  the full notices ship in vendor/platform-tools/NOTICE.txt.
 
 - LumaLink Camera (virtualcam/), a modified version of the Unity Capture
   filter. Copyright (c) 2018 Bernhard Schelling, based on UnityCam,
@@ -15,6 +15,14 @@ Third-party components:
   virtualcam/LICENSE.txt. It includes the Microsoft DirectShow base classes
   (streams.cpp, streams.h), Copyright (c) 1992-2001 Microsoft Corporation.
 
-- Qt and PySide6 (Qt for Python), bundled with the Windows executable.
+- Qt and PySide6 (Qt for Python), bundled with the desktop app.
   Copyright The Qt Company Ltd. Used under the GNU Lesser General Public
   License v3; the source is available from https://www.qt.io/.
+
+- FFmpeg libraries (libavcodec, libavformat, libavutil and others), bundled
+  with the desktop app through PyAV to decode the phone's H.264 video.
+  Copyright the FFmpeg developers. GNU Lesser General Public License v2.1 or
+  later; the source is available from https://ffmpeg.org/. PyAV itself is
+  BSD-licensed (https://github.com/PyAV-Org/PyAV).
+
+- NumPy (BSD 3-Clause) and Pillow (MIT-CMU), bundled with the desktop app.

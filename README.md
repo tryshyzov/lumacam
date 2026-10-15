@@ -5,6 +5,8 @@
 
 <p align="center"><img src="assets/LumaCam.png" alt="LumaLink Studio logo" width="240"></p>
 
+<p align="center"><a href="https://tryshyzov.github.io/lumacam/">Website and downloads</a></p>
+
 Windows desktop prototype for using an Android phone as a camera. The iOS companion and production installer are not implemented yet. (Pure vibecoding.) 
 
 ## Run the desktop app
