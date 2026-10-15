@@ -273,6 +273,15 @@ class H264TransportTests(unittest.TestCase):
         ):
             self.assertEqual(adb.find_adb(), sdk_adb)
 
+    def test_macos_lists_its_own_networks_without_the_host_name(self) -> None:
+        interfaces = [("127.0.0.1", None), ("192.168.1.20", "192.168.1.255"), ("240.0.0.2", None)]
+        with (
+            mock.patch.object(stream.sys, "platform", "darwin"),
+            mock.patch.object(stream, "_macos_ipv4_interfaces", return_value=interfaces),
+            mock.patch.object(stream.socket, "gethostname", side_effect=AssertionError),
+        ):
+            self.assertEqual(stream.local_ipv4_addresses(), ["192.168.1.20"])
+
     @unittest.skipUnless(sys.platform == "darwin", "reads macOS network interfaces")
     def test_lists_macos_network_interfaces(self) -> None:
         addresses = [address for address, _ in stream._macos_ipv4_interfaces()]

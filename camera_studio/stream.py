@@ -45,10 +45,7 @@ def local_network_blocked(
     while an allowed connection is still pending after ``wait`` seconds.
     """
     if local_addresses is None:
-        local_addresses = {
-            result[4][0]
-            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
-        }
+        local_addresses = local_ipv4_addresses()
     probes: list[socket.socket] = []
     try:
         for address in local_addresses:
@@ -135,6 +132,26 @@ def discover_usb_camera(
     raise ConnectionError(
         "Телефон не найден по USB. Подключите кабель, включите на телефоне "
         "«USB-модем» и нажмите «Начать трансляцию» в LumaLink Companion."
+    )
+
+
+def local_ipv4_addresses() -> list[str]:
+    """This computer's IPv4 addresses on its networks, loopback excluded."""
+    if sys.platform == "darwin":
+        # The host name can take half a minute to resolve on macOS and does
+        # not cover every interface, so ask the system; tunnels such as a VPN
+        # have no broadcast address and are left out, like in USB discovery.
+        return [
+            address
+            for address, broadcast in _macos_ipv4_interfaces()
+            if broadcast and not ipaddress.IPv4Address(address).is_loopback
+        ]
+    return sorted(
+        {
+            result[4][0]
+            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+            if not ipaddress.IPv4Address(result[4][0]).is_loopback
+        }
     )
 
 
