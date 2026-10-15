@@ -34,6 +34,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -77,6 +78,8 @@ class MainActivity : ComponentActivity() {
     private var publisher: H264Publisher? = null
     private var localServer: UsbFrameServer? = null
     private var videoEncoder: H264Encoder? = null
+    private var gpuCameraPipeline: GpuCameraPipeline? = null
+    private var gpuFailed = false
     // Set by the network senders when they need a key frame; the camera thread
     // asks the encoder for one, at most every KEY_FRAME_REQUEST_INTERVAL_MS
     // so a slow link does not turn every frame into a large key frame.
@@ -109,6 +112,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // For comparing the two paths on one phone:
+        // adb shell am start -n com.lumalink.companion/.MainActivity --ez force_copy true
+        gpuFailed = intent.getBooleanExtra(EXTRA_FORCE_COPY, false)
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
         buildScreen()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
@@ -126,6 +132,8 @@ class MainActivity : ComponentActivity() {
         videoEncoder?.close()
         videoEncoder = null
         cameraProvider?.unbindAll()
+        gpuCameraPipeline?.release { gpuFrames.close() }
+        gpuCameraPipeline = null
         cameraExecutor.shutdown()
         super.onDestroy()
     }
@@ -508,28 +516,32 @@ class MainActivity : ComponentActivity() {
             CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
             fpsRange,
         )
+        // The GPU path encodes what the preview draws, so the preview runs at
+        // the streaming resolution; the copying path keeps a small preview.
+        val gpu = if (gpuFailed) null else gpuPipeline()
+        if (gpu != null) {
+            previewBuilder.setTargetResolution(displayOriented(analysisSize(requestedResolution)))
+        }
         val preview = previewBuilder
             .build()
             .also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
-        val analysisBuilder = ImageAnalysis.Builder()
-            .setTargetResolution(analysisSize(requestedResolution))
-            .setTargetRotation(Surface.ROTATION_90)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
-            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-            fpsRange,
-        )
-        val analysis = analysisBuilder
-            .build()
-            .also { useCase ->
-                useCase.setAnalyzer(cameraExecutor, ::analyzeFrame)
-            }
         try {
             provider.unbindAll()
             activeCamera = null
-            activeCamera = provider.bindToLifecycle(this, selector, preview, analysis)
+            activeCamera = if (gpu != null) {
+                selector.filter(provider.availableCameraInfos).firstOrNull()?.let { info ->
+                    gpu.setCamera(info.sensorRotationDegrees, lensFacing == CameraSelector.LENS_FACING_FRONT)
+                }
+                val group = UseCaseGroup.Builder()
+                    .addUseCase(preview)
+                    .addEffect(gpu.effect)
+                    .build()
+                provider.bindToLifecycle(this, selector, group)
+            } else {
+                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange))
+            }
             cameraReady = true
             applyCameraSettings(JSONObject().apply {
                 put("autofocus", true)
@@ -544,8 +556,91 @@ class MainActivity : ComponentActivity() {
             cameraProblem = null
             render()
         } catch (error: Exception) {
+            if (gpu != null) {
+                fallBackToCopying(error)
+                return
+            }
             cameraProblem = t("cameraStartFailed", error.localizedMessage)
             render()
+        }
+    }
+
+    /** The CPU path: camera frames copied into the encoder (see [analyzeFrame]). */
+    private fun copyingAnalysis(fpsRange: Range<Int>): ImageAnalysis {
+        val analysisBuilder = ImageAnalysis.Builder()
+            .setTargetResolution(analysisSize(requestedResolution))
+            .setTargetRotation(Surface.ROTATION_90)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
+            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+            fpsRange,
+        )
+        return analysisBuilder
+            .build()
+            .also { useCase ->
+                useCase.setAnalyzer(cameraExecutor, ::analyzeFrame)
+            }
+    }
+
+    private fun gpuPipeline(): GpuCameraPipeline =
+        gpuCameraPipeline ?: GpuCameraPipeline(
+            gpuFrames,
+            onError = { error -> runOnUiThread { fallBackToCopying(error) } },
+        ).also { gpuCameraPipeline = it }
+
+    /** The GPU path failed on this phone: copy frames on the CPU from now on. */
+    private fun fallBackToCopying(error: Throwable) {
+        if (gpuFailed) return
+        Log.w(TAG, "GPU camera path failed; copying frames instead", error)
+        gpuFailed = true
+        gpuCameraPipeline?.release { gpuFrames.close() }
+        gpuCameraPipeline = null
+        bindCamera()
+    }
+
+    /** [size], a landscape camera size, in the display's orientation, as CameraX expects. */
+    private fun displayOriented(size: Size): Size {
+        val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
+        val portrait = rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180
+        return if (portrait) Size(size.height, size.width) else size
+    }
+
+    /** The GPU path's side of the encoder; called on its GL thread only. */
+    private val gpuFrames = object : GpuCameraPipeline.Frames {
+        private var encoder: H264Encoder? = null
+        private var lastFrameAt = 0L
+        private var size = Size(0, 0)
+
+        override fun encoderFor(size: Size): H264Encoder? {
+            if (publisher == null && localServer == null) return null
+            this.size = size
+            val current = encoder
+            if (current != null && current.matches(size.width, size.height, requestedFps)) {
+                return current
+            }
+            current?.close()
+            encoder = null
+            return H264Encoder(size.width, size.height, requestedFps, surfaceInput = true)
+                .also { encoder = it }
+        }
+
+        override fun wantsFrame(timestampNs: Long): Boolean {
+            if (timestampNs - lastFrameAt < FRAME_INTERVAL_TOLERANCE * 1_000_000_000L / requestedFps) {
+                return false
+            }
+            lastFrameAt = timestampNs
+            return true
+        }
+
+        override fun frameEncoded(encoder: H264Encoder) {
+            val started = SystemClock.elapsedRealtimeNanos()
+            requestKeyFrameIfWanted(encoder)
+            publishEncodedPackets(encoder.drain(), size.width, size.height, 0, started)
+        }
+
+        fun close() {
+            encoder?.close()
+            encoder = null
         }
     }
 
@@ -1034,6 +1129,7 @@ class MainActivity : ComponentActivity() {
         private const val PERFORMANCE_LOG_INTERVAL = 30
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
         private const val FRAME_INTERVAL_TOLERANCE = 0.75
+        private const val EXTRA_FORCE_COPY = "force_copy"
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val MODE_USB = "USB"
