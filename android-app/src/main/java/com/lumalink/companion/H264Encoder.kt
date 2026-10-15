@@ -201,47 +201,8 @@ internal class H264Encoder(
         }
 
         copyPlane(sourceViews[0], destinationViews[0], width, height)
-        if (
-            sourceViews[1].pixelStride == 2 &&
-            sourceViews[2].pixelStride == 2 &&
-            destinationViews[1].pixelStride == 2 &&
-            destinationViews[2].pixelStride == 2
-        ) {
-            if (!copyInterleavedChroma(sourceViews[2], destinationViews[2])) {
-                copyPlane(sourceViews[1], destinationViews[1], width / 2, height / 2)
-                copyPlane(sourceViews[2], destinationViews[2], width / 2, height / 2)
-            }
-        } else {
-            copyPlane(sourceViews[1], destinationViews[1], width / 2, height / 2)
-            copyPlane(sourceViews[2], destinationViews[2], width / 2, height / 2)
-        }
-    }
-
-    private fun copyInterleavedChroma(
-        source: PlaneView,
-        destination: PlaneView,
-    ): Boolean {
-        if (source.rowStride < width || destination.rowStride < width) return false
-        val sourceBuffer = source.buffer.duplicate()
-        val destinationBuffer = destination.buffer.duplicate()
-        val sourceStart = source.buffer.position()
-        val destinationStart = destination.buffer.position()
-        for (row in 0 until height / 2) {
-            val sourceRow = sourceStart + row * source.rowStride
-            val destinationRow = destinationStart + row * destination.rowStride
-            if (
-                sourceRow + width > sourceBuffer.limit() ||
-                destinationRow + width > destinationBuffer.limit()
-            ) {
-                return false
-            }
-            sourceBuffer.position(sourceRow)
-            sourceBuffer.limit(sourceRow + width)
-            destinationBuffer.position(destinationRow)
-            destinationBuffer.put(sourceBuffer)
-            sourceBuffer.limit(source.buffer.limit())
-        }
-        return true
+        copyPlane(sourceViews[1], destinationViews[1], width / 2, height / 2)
+        copyPlane(sourceViews[2], destinationViews[2], width / 2, height / 2)
     }
 
     private fun copyPlane(
@@ -264,17 +225,28 @@ internal class H264Encoder(
             }
             return
         }
+        // Interleaved chroma (U and V sharing memory, pixel stride 2): reading
+        // and writing a sample at a time through the buffers cost about 25 ns
+        // per sample, most of a frame's time at 1080p. Move whole rows instead
+        // and place the samples in arrays. The destination row is read first,
+        // so the other plane's samples between ours survive whatever the U/V
+        // order, and the span stops at the last sample, which the plane's
+        // buffer may end right after.
+        val sourceSpan = (rowBytes - 1) * source.pixelStride + 1
+        val destinationSpan = (rowBytes - 1) * destination.pixelStride + 1
+        val sourceRow = ByteArray(sourceSpan)
+        val destinationRow = ByteArray(destinationSpan)
         for (row in 0 until rows) {
+            sourceBuffer.position(sourceStart + row * source.rowStride)
+            sourceBuffer.get(sourceRow)
+            val destinationOffset = destinationStart + row * destination.rowStride
+            destinationBuffer.position(destinationOffset)
+            destinationBuffer.get(destinationRow)
             for (column in 0 until rowBytes) {
-                destinationBuffer.put(
-                    destinationStart + row * destination.rowStride +
-                        column * destination.pixelStride,
-                    sourceBuffer.get(
-                        sourceStart + row * source.rowStride +
-                            column * source.pixelStride,
-                    ),
-                )
+                destinationRow[column * destination.pixelStride] = sourceRow[column * source.pixelStride]
             }
+            destinationBuffer.position(destinationOffset)
+            destinationBuffer.put(destinationRow)
         }
     }
 
