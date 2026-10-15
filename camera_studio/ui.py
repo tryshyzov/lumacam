@@ -57,6 +57,7 @@ from camera_studio.widgets import (
     ICON_STATUS_OFF,
     ICON_STATUS_ON,
     ICON_STATUS_WAIT,
+    MACOS,
     STYLE_SHEET,
     Preview,
     ProfileButton,
@@ -72,6 +73,8 @@ from camera_studio.widgets import (
 STREAM_PORT = 8765
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
+# Room for the macOS close, minimize and zoom buttons drawn over the title bar.
+MACOS_WINDOW_BUTTONS_WIDTH = 78
 RESIZE_MARGIN = 5
 
 # Resolution, frame rate, and the frame size shown in the menu.
@@ -161,7 +164,19 @@ class _SettingsPopup(QFrame):
 
 class MainWindow(QWidget):
     def __init__(self, settings: QSettings | None = None) -> None:
-        super().__init__(None, Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        if MACOS:
+            # A native window whose content runs under a transparent title
+            # bar: macOS keeps its own window buttons, resizing and snapping.
+            flags = (
+                Qt.WindowType.Window
+                | Qt.WindowType.ExpandedClientAreaHint
+                | Qt.WindowType.NoTitleBarBackgroundHint
+            )
+        else:
+            flags = Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+        super().__init__(None, flags)
+        # Our own title bar fills the area under the transparent system one.
+        self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
         self.setObjectName("root")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.settings = settings or QSettings("LumaLink", "LumaLink Studio")
@@ -259,7 +274,8 @@ class MainWindow(QWidget):
         root.addLayout(body, 1)
         self._build_settings()
         self._build_profile_menu()
-        self._build_resize_grips()
+        if not MACOS:
+            self._build_resize_grips()
 
     def _icon_button(self, icon: QIcon, width: int = 28, height: int = 28, icon_size: int = 14) -> QToolButton:
         button = QToolButton(self)
@@ -273,7 +289,7 @@ class MainWindow(QWidget):
     def _build_title_bar(self) -> QWidget:
         bar = _TitleBar(self)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setContentsMargins(MACOS_WINDOW_BUTTONS_WIDTH if MACOS else 0, 0, 6, 0)
         layout.setSpacing(0)
         layout.addStretch(1)
 
@@ -294,6 +310,9 @@ class MainWindow(QWidget):
         layout.addWidget(self.profile_button)
         layout.addWidget(bar.gap)
 
+        self.maximize_button: QToolButton | None = None
+        if MACOS:
+            return bar
         for name, icon, slot in (
             ("minimize", svg_icon(ICON_MINIMIZE), self.showMinimized),
             ("maximize", self.icons["maximize"], self.toggle_maximized),
@@ -563,6 +582,8 @@ class MainWindow(QWidget):
         ]
 
     def _place_resize_grips(self) -> None:
+        if MACOS:
+            return
         margin, corner = RESIZE_MARGIN, 2 * RESIZE_MARGIN
         width, height = self.width(), self.height()
         places = {
@@ -643,6 +664,8 @@ class MainWindow(QWidget):
     # -------------------------------------------------------------- UI state
 
     def _refresh_window_buttons(self) -> None:
+        if self.maximize_button is None:
+            return
         maximized = self.isMaximized()
         self.maximize_button.setIcon(self.icons["restore" if maximized else "maximize"])
         name = self.t("restore" if maximized else "maximize")

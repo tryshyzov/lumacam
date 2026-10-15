@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from typing import Protocol
 
@@ -12,10 +13,14 @@ OUTPUT_HEIGHT = 720
 OUTPUT_FPS = 30
 
 
+MACOS = sys.platform == "darwin"
+
 _BACKENDS = (
     ("obs", "OBS Virtual Camera"),
     ("unitycapture", "Unity Video Capture"),
 )
+# Unity Capture is Windows-only; on macOS pyvirtualcam has just OBS.
+_MACOS_BACKENDS = (("obs", "OBS Virtual Camera"),)
 
 
 class CameraDevice(Protocol):
@@ -56,7 +61,7 @@ class VirtualCameraSession:
             self._pixel_format = pyvirtualcam.PixelFormat.RGB
 
         errors: list[str] = []
-        for backend, device in _BACKENDS:
+        for backend, device in _MACOS_BACKENDS if MACOS else _BACKENDS:
             try:
                 camera = camera_factory(
                     width=OUTPUT_WIDTH,
@@ -76,6 +81,14 @@ class VirtualCameraSession:
             return self
 
         details = "\n".join(errors)
+        if MACOS:
+            raise RuntimeError(
+                "На macOS виртуальная камера пока работает через OBS. Установите "
+                "OBS Studio 30 или новее, один раз нажмите в нём «Запустить "
+                "виртуальную камеру» и разрешите системное расширение OBS в "
+                "Системных настройках.\n"
+                f"{details}"
+            )
         raise RuntimeError(
             "Камера LumaLink Camera не установлена. Установите LumaLink Studio "
             "через установщик либо поставьте OBS Studio или Unity Capture.\n"
