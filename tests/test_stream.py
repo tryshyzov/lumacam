@@ -72,6 +72,8 @@ class H264TransportTests(unittest.TestCase):
         listener.listen(1)
         port = listener.getsockname()[1]
         received = threading.Event()
+        acknowledged = threading.Event()
+        finished = threading.Event()
         frames: list[bytes] = []
         errors: list[str] = []
         handshakes: list[bytes] = []
@@ -89,7 +91,10 @@ class H264TransportTests(unittest.TestCase):
                     acknowledgements.append(stream.read(5))
                     payload_length = struct.unpack("!I", acknowledgements[0][1:])[0]
                     control_payloads.append(stream.read(payload_length))
-                    received.wait(2)
+                    acknowledged.set()
+                    # Hold the connection until the test is done; closing it
+                    # earlier is a phone hanging up, which the receiver reports.
+                    finished.wait(2)
 
         server_thread = threading.Thread(target=serve, daemon=True)
         server_thread.start()
@@ -110,8 +115,8 @@ class H264TransportTests(unittest.TestCase):
             self.assertTrue(received.wait(2))
             self.assertEqual(handshakes, [USB_PROTOCOL_MAGIC])
             self.assertEqual(frames, [access_unit])
+            self.assertTrue(acknowledged.wait(2))
             self.assertEqual(errors, [])
-            server_thread.join(2)
             self.assertEqual(
                 acknowledgements,
                 [
@@ -122,6 +127,8 @@ class H264TransportTests(unittest.TestCase):
             self.assertEqual(control_payloads, [encode_control_payload(command)])
         finally:
             receiver.stop()
+            finished.set()
+            server_thread.join(2)
 
     def test_stopping_wakes_a_reader_blocked_on_the_socket(self) -> None:
         # Closing right after the shutdown left about one reader in ten
