@@ -1,9 +1,11 @@
 import functools
+import math
 import queue
 import threading
 import time
 from collections.abc import Callable
 
+import av
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -90,16 +92,46 @@ class VirtualCameraOutput:
 
 
 def _to_output_frame(image: Image.Image) -> np.ndarray:
+    """The picture fitted into the camera's frame, centered on black.
+
+    Shrinking a 1080p picture with Pillow took about 6 ms; FFmpeg's scaler,
+    already here for decoding, does it in about 2. The size is the one
+    Image.thumbnail picks, so a smaller picture is never enlarged.
+    """
     image = image.convert("RGB")
     if image.size == (OUTPUT_WIDTH, OUTPUT_HEIGHT):
         return np.array(image, dtype=np.uint8, copy=True, order="C")
-    image.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.Resampling.BILINEAR)
-    canvas = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT))
-    canvas.paste(
-        image,
-        ((OUTPUT_WIDTH - image.width) // 2, (OUTPUT_HEIGHT - image.height) // 2),
-    )
-    return np.array(canvas, dtype=np.uint8, copy=True, order="C")
+    width, height = _fitted_size(image.width, image.height)
+    if (width, height) == image.size:
+        picture = np.asarray(image)
+    else:
+        picture = (
+            av.VideoFrame.from_image(image)
+            .reformat(width=width, height=height, format="rgb24", interpolation="BILINEAR")
+            .to_ndarray()
+        )
+    frame = np.zeros((OUTPUT_HEIGHT, OUTPUT_WIDTH, 3), dtype=np.uint8)
+    left = (OUTPUT_WIDTH - width) // 2
+    top = (OUTPUT_HEIGHT - height) // 2
+    frame[top : top + height, left : left + width] = picture
+    return frame
+
+
+def _fitted_size(width: int, height: int) -> tuple[int, int]:
+    """The size Image.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT)) gives a picture."""
+    if width <= OUTPUT_WIDTH and height <= OUTPUT_HEIGHT:
+        return width, height
+    aspect = width / height
+    x, y = OUTPUT_WIDTH, OUTPUT_HEIGHT
+
+    def round_aspect(number: float, key: Callable[[int], float]) -> int:
+        return max(min(math.floor(number), math.ceil(number), key=key), 1)
+
+    if x / y >= aspect:
+        x = round_aspect(y * aspect, key=lambda n: abs(aspect - n / y))
+    else:
+        y = round_aspect(x / aspect, key=lambda n: 0 if n == 0 else abs(aspect - x / n))
+    return x, y
 
 
 @functools.lru_cache(maxsize=2)

@@ -29,6 +29,22 @@ from camera_studio.stream import (
 )
 
 
+class H264DecoderTests(unittest.TestCase):
+    def test_software_decoder_by_default(self) -> None:
+        with mock.patch.dict(stream.os.environ, {}, clear=False):
+            stream.os.environ.pop(stream.HWACCEL_VARIABLE, None)
+            self.assertIsNone(stream.H264Decoder().accelerator)
+
+    def test_falls_back_to_software_without_a_usable_gpu_decoder(self) -> None:
+        with (
+            mock.patch.dict(stream.os.environ, {stream.HWACCEL_VARIABLE: "1"}),
+            mock.patch.dict(stream.HWACCEL_DEVICES, {sys.platform: ("no-such-device",)}),
+        ):
+            decoder = stream.H264Decoder()
+        self.assertIsNone(decoder.accelerator)
+        self.assertEqual(decoder.decode(b"\x00\x00\x00\x01\x09"), [])
+
+
 class H264TransportTests(unittest.TestCase):
     def test_corrects_inverted_stream_orientation(self) -> None:
         image = Image.new("RGB", (2, 2))
@@ -142,7 +158,7 @@ class H264TransportTests(unittest.TestCase):
             peer, _ = listener.accept()
             connection.settimeout(5)
 
-            def read() -> None:
+            def read(connection: socket.socket = connection) -> None:
                 try:
                     connection.recv(4)
                 except OSError:
