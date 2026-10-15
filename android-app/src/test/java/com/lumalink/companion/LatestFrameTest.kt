@@ -45,14 +45,26 @@ class LatestFrameTest {
     }
 
     @Test
-    fun aSkippedFrameHoldsBackTheRestUntilAKeyFrame() {
+    fun framesHandedOverTogetherAreAllSent() {
         frames.publish(key(1))
         next()
+        // The encoder sometimes returns two or three frames in one go.
         frames.publish(delta(2))
-        frames.publish(delta(3)) // frame 2 is never sent
-        later(delta(4), key(5))
+        frames.publish(delta(3))
+        frames.publish(delta(4))
 
-        assertEquals(5, next())
+        assertEquals(listOf(2, 3, 4), listOf(next(), next(), next()))
+        assertEquals(0, requests)
+    }
+
+    @Test
+    fun fallingTooFarBehindHoldsBackTheRestUntilAKeyFrame() {
+        frames.publish(key(1))
+        next()
+        (2..7).forEach { frames.publish(delta(it)) } // frames 2 and 3 are no longer kept
+        later(delta(8), key(9))
+
+        assertEquals(9, next())
         assertEquals(1, requests)
     }
 
@@ -60,10 +72,10 @@ class LatestFrameTest {
     fun aKeyFrameRightAfterAGapGoesOutAtOnce() {
         frames.publish(key(1))
         next()
-        frames.publish(delta(2))
-        frames.publish(key(3))
+        (2..6).forEach { frames.publish(delta(it)) }
+        frames.publish(key(7))
 
-        assertEquals(3, next())
+        assertEquals(7, next())
         assertEquals(0, requests)
     }
 
