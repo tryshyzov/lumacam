@@ -52,6 +52,17 @@ Install Inno Setup 6 and build the desktop executable first. From the project ro
 
 The setup package is written to `dist\installer`. Build the virtual camera first (see [`virtualcam/README.md`](./virtualcam/README.md)); the installer bundles and registers it. It asks for administrator rights once, because a camera that every application can see is registered machine-wide. It installs no kernel driver. The current desktop and setup executables are unsigned development artifacts, not public release binaries. See [`installer/README.md`](./installer/README.md) for details.
 
+## Build the macOS app
+
+On macOS 13 or later, with Python 3.10+, install the dependencies and PyInstaller, then run the build script from the project root:
+
+```sh
+python3 -m pip install -r requirements.txt pyinstaller
+scripts/build-macos.sh
+```
+
+It writes `dist/LumaLink Studio.app` and `dist/LumaLinkStudio-<version>-macos.dmg`. With Xcode installed, the script also compiles `assets/LumaLinkStudio.icon` (an Icon Composer icon) so the icon follows the macOS light, dark, tinted and clear appearances; without it the app keeps the plain `.icns` icon. The app is signed ad hoc, not with a Developer ID, so on another Mac open it the first time with right-click → **Open**. On first launch macOS asks to let it find devices on local networks; allow it, or the phone cannot connect. The LumaLink Camera virtual camera is Windows-only for now: on macOS the virtual camera goes through OBS Virtual Camera (OBS Studio 30+, started once from OBS).
+
 ## Connect the Android camera
 
 The `android-app` module is a native Kotlin/CameraX companion. It previews the camera and streams hardware-encoded H.264 access units to the desktop without an access code. USB uses a length-prefixed binary protocol with per-frame acknowledgement and camera-control messages over the phone's USB-tethering network; Wi-Fi uses the same video/control framing over a TCP connection. USB debugging is needed only for the VPN fallback described below.
