@@ -25,10 +25,10 @@ internal class H264Publisher(
     private val requestedHost: String?,
     private val onStatus: LinkListener,
     private val onControl: (JSONObject) -> Unit,
+    onKeyFrameNeeded: () -> Unit,
 ) {
-    private val frameLock = Object()
+    private val frames = LatestFrame(onKeyFrameNeeded)
     private val running = AtomicBoolean(false)
-    @Volatile private var latestFrame: ByteArray? = null
     @Volatile private var socket: Socket? = null
     @Volatile private var discoverySocket: DatagramSocket? = null
 
@@ -39,11 +39,8 @@ internal class H264Publisher(
         }
     }
 
-    fun publishFrame(frame: ByteArray) {
-        latestFrame = frame
-        synchronized(frameLock) {
-            frameLock.notifyAll()
-        }
+    fun publishFrame(frame: EncodedFrame) {
+        frames.publish(frame)
     }
 
     fun stop() {
@@ -54,9 +51,7 @@ internal class H264Publisher(
         } catch (_: Exception) {
             // Closing the socket also interrupts an in-progress network write.
         }
-        synchronized(frameLock) {
-            frameLock.notifyAll()
-        }
+        frames.close()
     }
 
     private fun publish() {
@@ -104,17 +99,14 @@ internal class H264Publisher(
                 throw IllegalStateException("Компьютер не поддерживает H.264-поток")
             }
 
-            connection.soTimeout = 0
+            // The computer acknowledges each frame at once; a computer that
+            // vanished without closing the connection would otherwise leave
+            // the phone waiting for that acknowledgement forever.
+            connection.soTimeout = ACK_TIMEOUT_MS
             onStatus(LinkEvent.CONNECTED, null)
-            var sentFrame: ByteArray? = null
-            while (running.get() && !connection.isClosed) {
-                val frame = synchronized(frameLock) {
-                    while (running.get() && latestFrame === sentFrame) {
-                        frameLock.wait(500)
-                    }
-                    latestFrame
-                } ?: continue
-                if (frame === sentFrame) continue
+            val reader = frames.Reader()
+            while (!connection.isClosed) {
+                val frame = reader.next { running.get() } ?: break
 
                 output.writeInt(frame.size)
                 output.write(frame)
@@ -131,10 +123,11 @@ internal class H264Publisher(
                     input.readFully(payload)
                     onControl(JSONObject(payload.toString(Charsets.UTF_8)))
                 }
-                sentFrame = frame
             }
         } catch (error: ComputerNotFoundException) {
             if (running.get()) onStatus(LinkEvent.NOT_FOUND, null)
+        } catch (error: SocketTimeoutException) {
+            if (running.get()) onStatus(LinkEvent.NO_ANSWER, null)
         } catch (error: Exception) {
             if (running.get()) {
                 Log.e(TAG, "Camera stream connection failed for $host:$PORT", error)
@@ -217,6 +210,7 @@ internal class H264Publisher(
     companion object {
         private const val PORT = 8765
         private const val CONNECT_TIMEOUT_MS = 5_000
+        private const val ACK_TIMEOUT_MS = 5_000
         private const val DISCOVERY_PORT = 8767
         private const val DISCOVERY_INTERVAL_MS = 500
         private const val DISCOVERY_ATTEMPTS = 12

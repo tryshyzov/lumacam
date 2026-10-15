@@ -41,6 +41,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 import org.json.JSONObject
 
@@ -76,6 +77,11 @@ class MainActivity : ComponentActivity() {
     private var publisher: H264Publisher? = null
     private var localServer: UsbFrameServer? = null
     private var videoEncoder: H264Encoder? = null
+    // Set by the network senders when they need a key frame; the camera thread
+    // asks the encoder for one, at most every KEY_FRAME_REQUEST_INTERVAL_MS
+    // so a slow link does not turn every frame into a large key frame.
+    private val keyFrameWanted = AtomicBoolean(false)
+    private var lastKeyFrameRequestAt = 0L
     private var cameraReady = false
     private var lastEncodedFrameAt = 0L
     private var lastMeasuredFrameStartedAt = 0L
@@ -421,6 +427,7 @@ class MainActivity : ComponentActivity() {
             linkState == LinkEvent.CONNECTED -> R.drawable.ic_status_live to t("live", modeControl.value)
             linkState == LinkEvent.FAILED -> R.drawable.ic_status_error to t("failed", linkDetail ?: t("closed"))
             linkState == LinkEvent.NOT_FOUND -> R.drawable.ic_status_error to t("failed", t("notFound"))
+            linkState == LinkEvent.NO_ANSWER -> R.drawable.ic_status_error to t("failed", t("noAnswer"))
             linkState == LinkEvent.NEED_TETHERING -> R.drawable.ic_status_wait to t("needTethering")
             linkState == LinkEvent.WAITING -> R.drawable.ic_status_wait to t("waitUsb")
             linkState == LinkEvent.SEARCHING -> R.drawable.ic_status_wait to t("waitWifi")
@@ -743,7 +750,9 @@ class MainActivity : ComponentActivity() {
                 width == image.width &&
                 height == image.height
             ) {
-                val packets = ensureVideoEncoder(width, height).encode(image)
+                val encoder = ensureVideoEncoder(width, height)
+                requestKeyFrameIfWanted(encoder)
+                val packets = encoder.encode(image)
                 publishEncodedPackets(packets, width, height, rotationDegrees, frameStartedAt)
                 return
             }
@@ -779,7 +788,9 @@ class MainActivity : ComponentActivity() {
                 height,
                 rotationDegrees,
             )
-            val packets = ensureVideoEncoder(frameWidth, frameHeight).encode(frameData)
+            val encoder = ensureVideoEncoder(frameWidth, frameHeight)
+            requestKeyFrameIfWanted(encoder)
+            val packets = encoder.encode(frameData)
             publishEncodedPackets(packets, frameWidth, frameHeight, rotationDegrees, frameStartedAt)
         } catch (error: Exception) {
             Log.e(TAG, "Could not encode camera frame", error)
@@ -800,8 +811,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestKeyFrameIfWanted(encoder: H264Encoder) {
+        if (!keyFrameWanted.get()) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastKeyFrameRequestAt < KEY_FRAME_REQUEST_INTERVAL_MS) return
+        keyFrameWanted.set(false)
+        lastKeyFrameRequestAt = now
+        encoder.requestKeyFrame()
+    }
+
     private fun publishEncodedPackets(
-        packets: List<ByteArray>,
+        packets: List<EncodedFrame>,
         width: Int,
         height: Int,
         rotationDegrees: Int,
@@ -924,7 +944,7 @@ class MainActivity : ComponentActivity() {
         if (source !== publisher && source !== localServer) return
         when (event) {
             LinkEvent.STOPPED -> linkState = null
-            LinkEvent.FAILED, LinkEvent.NOT_FOUND -> {
+            LinkEvent.FAILED, LinkEvent.NOT_FOUND, LinkEvent.NO_ANSWER -> {
                 linkState = event
                 linkDetail = detail
                 if (source === publisher) publisher = null
@@ -946,6 +966,7 @@ class MainActivity : ComponentActivity() {
             onControl = { command ->
                 runOnUiThread { applyCameraControl(command) }
             },
+            onKeyFrameNeeded = { keyFrameWanted.set(true) },
         )
         localServer = server
         try {
@@ -974,6 +995,7 @@ class MainActivity : ComponentActivity() {
             onControl = { command ->
                 runOnUiThread { applyCameraControl(command) }
             },
+            onKeyFrameNeeded = { keyFrameWanted.set(true) },
         )
         publisher = activePublisher
         try {
@@ -988,6 +1010,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val PERFORMANCE_LOG_INTERVAL = 30
+        private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val MODE_USB = "USB"
