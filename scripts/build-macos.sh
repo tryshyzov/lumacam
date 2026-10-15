@@ -7,6 +7,18 @@ set -eu
 
 python="${PYTHON:-python3}"
 version=$("$python" -c 'from camera_studio import __version__; print(__version__)')
+# The app runs on the processor its Python was built for: Apple silicon or
+# Intel. Build on each (CI does) for both downloads.
+arch=$("$python" -c 'import platform; print(platform.machine())')
+case "$arch" in
+    arm64) arch_name=apple-silicon ;;
+    x86_64) arch_name=intel ;;
+    *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
+esac
+
+if [ ! -x vendor/platform-tools/adb ]; then
+    scripts/fetch-platform-tools.sh
+fi
 
 "$python" -m PyInstaller --noconfirm --clean LumaLinkStudio-macos.spec
 app="dist/LumaLink Studio.app"
@@ -23,8 +35,13 @@ if xcrun --find actool >/dev/null 2>&1; then
     xcrun actool assets/LumaLinkStudio.icon \
         --compile "$icon_build" --platform macosx --minimum-deployment-target 13.0 \
         --app-icon LumaLinkStudio --output-partial-info-plist "$icon_build/icon.plist" \
-        --errors --warnings >/dev/null
-    cp "$icon_build/Assets.car" "$app/Contents/Resources/"
+        --errors --warnings >/dev/null || true
+    # Xcode before 26 has actool but cannot read Icon Composer icons.
+    if [ -f "$icon_build/Assets.car" ]; then
+        cp "$icon_build/Assets.car" "$app/Contents/Resources/"
+    else
+        echo "This Xcode cannot compile assets/LumaLinkStudio.icon: building with the .icns icon only" >&2
+    fi
     rm -rf "$icon_build"
 else
     echo "Xcode not found: building with the .icns icon only" >&2
@@ -33,7 +50,7 @@ fi
 # LumaLink Camera: the extension goes where macOS looks for the app's system
 # extensions, and its helper next to the app's executable, so that macOS
 # treats it as part of the app. See macvirtualcam/README.md.
-LUMALINK_VERSION="$version" macvirtualcam/build.sh
+LUMALINK_VERSION="$version" MACOS_TARGET="$arch-apple-macos13.0" macvirtualcam/build.sh
 extension="$app/Contents/Library/SystemExtensions/com.lumalink.studio.camera.systemextension"
 mkdir -p "$(dirname "$extension")"
 cp -R macvirtualcam/build/com.lumalink.studio.camera.systemextension "$extension"
@@ -61,7 +78,7 @@ staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
-image="dist/LumaLinkStudio-$version-macos.dmg"
+image="dist/LumaLinkStudio-$version-macos-$arch_name.dmg"
 rm -f "$image"
 hdiutil create -quiet -volname "LumaLink Studio" -srcfolder "$staging" \
     -fs HFS+ -format UDZO "$image"

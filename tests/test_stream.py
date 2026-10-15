@@ -264,6 +264,17 @@ class H264TransportTests(unittest.TestCase):
             {"192.168.1.20": "192.168.1.255", "10.80.41.7": "10.80.41.255"},
         )
 
+    def test_uses_the_adb_inside_the_mac_app_when_none_is_installed(self) -> None:
+        frameworks = Path("/Applications/LumaLink Studio.app/Contents/Frameworks")
+        bundled = frameworks / "platform-tools" / "adb"
+        with (
+            mock.patch.object(adb.sys, "platform", "darwin"),
+            mock.patch.object(adb.sys, "_MEIPASS", str(frameworks), create=True),
+            mock.patch.object(adb.shutil, "which", return_value=None),
+            mock.patch.object(Path, "is_file", lambda path: path == bundled),
+        ):
+            self.assertEqual(adb.find_adb(), bundled)
+
     def test_finds_android_studio_adb_on_macos_without_a_shell_path(self) -> None:
         sdk_adb = Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb"
         with (

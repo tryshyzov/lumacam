@@ -81,8 +81,17 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS desktop app
-    runs-on: macos-latest
+    name: macOS desktop app (${{ matrix.arch }})
+    # Python and its packages are built per processor, so each runner builds
+    # the app for its own: Apple silicon and Intel.
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            arch: apple-silicon
+          - runner: macos-15-intel
+            arch: intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,8 +119,9 @@ jobs:
           PY
           grep __version__ camera_studio/__init__.py
 
-      # Builds the app for this runner's architecture (Apple silicon) and its
-      # disk image; the adaptive icon is compiled when the runner's Xcode can.
+      # Builds the app for this runner's processor and its disk image, with
+      # ADB (fetched by the script) inside; the adaptive icon is compiled when
+      # the runner's Xcode can.
       - name: Build app and disk image
         env:
           PYTHON: python
@@ -121,7 +131,7 @@ jobs:
       # first launch (right-click → Open).
       - uses: actions/upload-artifact@v4
         with:
-          name: LumaLinkStudio-macos
+          name: LumaLinkStudio-macos-${{ matrix.arch }}
           path: dist/*.dmg
           if-no-files-found: error
 

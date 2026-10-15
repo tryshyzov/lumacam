@@ -3,11 +3,19 @@
 
 from camera_studio import __version__
 
+# ADB is the VPN-proof fallback for the USB transport, and on macOS the usual
+# USB route: most phones' tethering has no macOS driver. The universal binary
+# comes from scripts/fetch-platform-tools.sh; see vendor/README.md.
+adb_binaries = [('vendor/platform-tools/adb', 'platform-tools')]
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('assets/LumaCam.png', 'assets')],
+    binaries=adb_binaries,
+    datas=[
+        ('assets/LumaCam.png', 'assets'),
+        ('vendor/platform-tools/NOTICE.txt', 'platform-tools'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

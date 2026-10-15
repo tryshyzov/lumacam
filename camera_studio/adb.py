@@ -74,7 +74,7 @@ def find_adb() -> Path | None:
         ):
             if executable.is_file():
                 return executable
-        return None
+        return _bundled_macos_adb()
 
     package_root = (
         Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
@@ -112,6 +112,18 @@ def _bundled_adb() -> Path | None:
     except OSError:
         return None
     return target / "adb.exe"
+
+
+def _bundled_macos_adb() -> Path | None:
+    # Unlike the Windows one-file executable, the app bundle stays on disk, so
+    # the ADB server, which outlives the app, can run from inside it.
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is None:
+        root = Path(__file__).resolve().parents[1] / "vendor"
+    else:
+        root = Path(frozen_root)
+    executable = root / "platform-tools" / "adb"
+    return executable if executable.is_file() else None
 
 
 def _run_adb(adb: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
