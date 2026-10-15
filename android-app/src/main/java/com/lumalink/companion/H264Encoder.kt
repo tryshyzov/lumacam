@@ -22,6 +22,15 @@ internal class H264Encoder(
     private var codecConfigComplete = true
     private var lastPresentationTimeUs = 0L
 
+    // TEMPORARY timing (branch android-encoder-timing): where a frame's time goes.
+    private var timedFrames = 0
+    private var dequeueNs = 0L
+    private var copyNs = 0L
+    private var queueNs = 0L
+    private var drainNs = 0L
+    private var missedInputs = 0
+    private var layoutLogged = false
+
     init {
         require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0) {
             "Для H.264 требуются чётные размеры кадра"
@@ -66,14 +75,36 @@ internal class H264Encoder(
             "Размер кадра камеры не совпадает с конфигурацией H.264"
         }
         queueInput { inputImage ->
+            if (!layoutLogged) {
+                layoutLogged = true
+                Log.i(TAG, "TIMING layout camera=" + image.planes.joinToString { "${it.pixelStride}/${it.rowStride}" } +
+                    " encoder=" + inputImage.planes.joinToString { "${it.pixelStride}/${it.rowStride}" } +
+                    " encoderFormat=${inputImage.format}")
+            }
             copyCameraPlanes(image.planes, inputImage.planes)
         }
-        return drainOutput()
+        val started = System.nanoTime()
+        val packets = drainOutput()
+        drainNs += System.nanoTime() - started
+        reportTiming()
+        return packets
+    }
+
+    private fun reportTiming() {
+        timedFrames += 1
+        if (timedFrames % 30 != 0) return
+        fun ms(ns: Long) = "%.1f".format(ns / 30 / 1e6)
+        Log.i(TAG, "TIMING per frame (30-frame avg, ${width}x$height): dequeue=${ms(dequeueNs)}ms copy=${ms(copyNs)}ms queue=${ms(queueNs)}ms drain=${ms(drainNs)}ms missedInputs=$missedInputs")
+        dequeueNs = 0; copyNs = 0; queueNs = 0; drainNs = 0; missedInputs = 0
     }
 
     private fun queueInput(fillInput: (Image) -> Unit) {
+        var mark = System.nanoTime()
         val inputIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
+        dequeueNs += System.nanoTime() - mark
+        if (inputIndex < 0) missedInputs += 1
         if (inputIndex >= 0) {
+            mark = System.nanoTime()
             val image = codec.getInputImage(inputIndex)
                 ?: throw IllegalStateException("H.264-кодировщик не выдал YUV-вход")
             try {
@@ -81,6 +112,8 @@ internal class H264Encoder(
             } finally {
                 image.close()
             }
+            copyNs += System.nanoTime() - mark
+            mark = System.nanoTime()
             val presentationTimeUs =
                 maxOf(System.nanoTime() / 1_000L, lastPresentationTimeUs + 1L)
             lastPresentationTimeUs = presentationTimeUs
@@ -91,6 +124,7 @@ internal class H264Encoder(
                 presentationTimeUs,
                 0,
             )
+            queueNs += System.nanoTime() - mark
         }
     }
 
