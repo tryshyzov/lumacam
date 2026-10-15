@@ -49,6 +49,9 @@ internal class GpuCameraPipeline(
 
         /** Called after a frame was drawn into [encoder]'s input. */
         fun frameEncoded(encoder: H264Encoder)
+
+        /** Close encoders [encoderFor] replaced, now that nothing draws into them. */
+        fun closeReplacedEncoders()
     }
 
     private val thread = HandlerThread("LumaLink GPU").apply { start() }
@@ -64,6 +67,9 @@ internal class GpuCameraPipeline(
     private var idleSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var program = 0
     private var texture = 0
+    private var textureMatrixLocation = 0
+    private var positionLocation = 0
+    private var encoderFailed = false
 
     private var cameraTexture: SurfaceTexture? = null
     private var cameraSize = Size(0, 0)
@@ -71,6 +77,7 @@ internal class GpuCameraPipeline(
     private val previewMatrix = FloatArray(16)
     private val encoderMatrix = FloatArray(16)
     @Volatile private var bufferCorrection = FloatArray(16).also { flipForGl(it) }
+    @Volatile private var requestedSize = Size(0, 0)
 
     /**
      * Tell the pipeline about the camera being bound. The camera rotates (and,
@@ -80,7 +87,8 @@ internal class GpuCameraPipeline(
      * outputs (SurfaceOutputImpl): predict the texture transform from the
      * sensor orientation and lens, invert it, and keep only the flip OpenGL needs.
      */
-    fun setCamera(sensorRotationDegrees: Int, frontFacing: Boolean) {
+    fun setCamera(sensorRotationDegrees: Int, frontFacing: Boolean, streamSize: Size) {
+        requestedSize = streamSize
         val predicted = FloatArray(16)
         flipForGl(predicted)
         Matrix.translateM(predicted, 0, 0.5f, 0.5f, 0f)
@@ -108,6 +116,15 @@ internal class GpuCameraPipeline(
             try {
                 setUpGl()
                 val size = request.resolution
+                val requested = requestedSize
+                if (maxOf(size.width, size.height) < maxOf(requested.width, requested.height)) {
+                    // CameraX caps the preview at the screen size; on a smaller
+                    // screen the copying path still gets the full resolution.
+                    throw IllegalStateException(
+                        "Camera frames arrive at ${size.width}x${size.height}, " +
+                            "below the requested ${requested.width}x${requested.height}",
+                    )
+                }
                 val surfaceTexture = SurfaceTexture(texture).apply {
                     setDefaultBufferSize(size.width, size.height)
                 }
@@ -180,30 +197,44 @@ internal class GpuCameraPipeline(
         try {
             surfaceTexture.updateTexImage()
             surfaceTexture.getTransformMatrix(textureMatrix)
-            val timestamp = surfaceTexture.timestamp
-
             val output = preview
             if (output != null && previewSurface != EGL14.EGL_NO_SURFACE) {
                 output.updateTransformMatrix(previewMatrix, textureMatrix)
                 draw(previewSurface, output.size, previewMatrix)
                 EGL14.eglSwapBuffers(display, previewSurface)
             }
-
-            val target = frames.encoderFor(cameraSize)
-            if (target !== encoder) {
-                destroySurface(encoderSurface)
-                encoderSurface = target?.inputSurface?.let { windowSurface(it) } ?: EGL14.EGL_NO_SURFACE
-                encoder = target
-            }
-            if (target != null && encoderSurface != EGL14.EGL_NO_SURFACE && frames.wantsFrame(timestamp)) {
-                Matrix.multiplyMM(encoderMatrix, 0, textureMatrix, 0, bufferCorrection, 0)
-                draw(encoderSurface, cameraSize, encoderMatrix)
-                EGLExt.eglPresentationTimeANDROID(display, encoderSurface, timestamp)
-                EGL14.eglSwapBuffers(display, encoderSurface)
-                frames.frameEncoded(target)
-            }
         } catch (error: Exception) {
-            Log.e(TAG, "Could not draw a camera frame", error)
+            // A bad preview frame only costs the preview; the stream goes on.
+            Log.e(TAG, "Could not draw the preview", error)
+        }
+        if (encoderFailed) return
+        try {
+            encode(surfaceTexture.timestamp)
+        } catch (error: Exception) {
+            // Without an encoder there is no video at all: hand over to the
+            // copying path once, rather than failing again on every frame.
+            Log.e(TAG, "Could not encode on the GPU", error)
+            encoderFailed = true
+            onError(error)
+        }
+    }
+
+    private fun encode(timestamp: Long) {
+        val target = frames.encoderFor(cameraSize)
+        if (target !== encoder) {
+            // Stop drawing into the old encoder before it is closed.
+            destroySurface(encoderSurface)
+            encoderSurface = EGL14.EGL_NO_SURFACE
+            encoder = target
+            frames.closeReplacedEncoders()
+            if (target != null) encoderSurface = windowSurface(checkNotNull(target.inputSurface))
+        }
+        if (target != null && encoderSurface != EGL14.EGL_NO_SURFACE && frames.wantsFrame(timestamp)) {
+            Matrix.multiplyMM(encoderMatrix, 0, textureMatrix, 0, bufferCorrection, 0)
+            draw(encoderSurface, cameraSize, encoderMatrix)
+            EGLExt.eglPresentationTimeANDROID(display, encoderSurface, timestamp)
+            check(EGL14.eglSwapBuffers(display, encoderSurface)) { "Could not hand a frame to the encoder" }
+            frames.frameEncoded(target)
         }
     }
 
@@ -213,12 +244,11 @@ internal class GpuCameraPipeline(
         GLES20.glUseProgram(program)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTextureMatrix"), 1, false, matrix, 0)
-        val position = GLES20.glGetAttribLocation(program, "aPosition")
-        GLES20.glEnableVertexAttribArray(position)
-        GLES20.glVertexAttribPointer(position, 2, GLES20.GL_FLOAT, false, 0, QUAD)
+        GLES20.glUniformMatrix4fv(textureMatrixLocation, 1, false, matrix, 0)
+        GLES20.glEnableVertexAttribArray(positionLocation)
+        GLES20.glVertexAttribPointer(positionLocation, 2, GLES20.GL_FLOAT, false, 0, QUAD)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDisableVertexAttribArray(position)
+        GLES20.glDisableVertexAttribArray(positionLocation)
     }
 
     private fun setUpGl() {
@@ -253,6 +283,8 @@ internal class GpuCameraPipeline(
         EGL14.eglMakeCurrent(display, idleSurface, idleSurface, context)
 
         program = linkProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        textureMatrixLocation = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
         val names = IntArray(1)
         GLES20.glGenTextures(1, names, 0)
         texture = names[0]

@@ -74,9 +74,10 @@ class MainActivity : ComponentActivity() {
     private var activeCamera: Camera? = null
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private var requestedResolution = DEFAULT_RESOLUTION
-    private var requestedFps = DEFAULT_FPS
-    private var publisher: H264Publisher? = null
-    private var localServer: UsbFrameServer? = null
+    // Also read on the camera and GL threads.
+    @Volatile private var requestedFps = DEFAULT_FPS
+    @Volatile private var publisher: H264Publisher? = null
+    @Volatile private var localServer: UsbFrameServer? = null
     private var videoEncoder: H264Encoder? = null
     private var gpuCameraPipeline: GpuCameraPipeline? = null
     private var gpuFailed = false
@@ -532,7 +533,11 @@ class MainActivity : ComponentActivity() {
             activeCamera = null
             activeCamera = if (gpu != null) {
                 selector.filter(provider.availableCameraInfos).firstOrNull()?.let { info ->
-                    gpu.setCamera(info.sensorRotationDegrees, lensFacing == CameraSelector.LENS_FACING_FRONT)
+                    gpu.setCamera(
+                        info.sensorRotationDegrees,
+                        lensFacing == CameraSelector.LENS_FACING_FRONT,
+                        analysisSize(requestedResolution),
+                    )
                 }
                 val group = UseCaseGroup.Builder()
                     .addUseCase(preview)
@@ -593,6 +598,8 @@ class MainActivity : ComponentActivity() {
         if (gpuFailed) return
         Log.w(TAG, "GPU camera path failed; copying frames instead", error)
         gpuFailed = true
+        // Unbind first so CameraX releases its surfaces before the GL thread stops.
+        cameraProvider?.unbindAll()
         gpuCameraPipeline?.release { gpuFrames.close() }
         gpuCameraPipeline = null
         bindCamera()
@@ -608,6 +615,7 @@ class MainActivity : ComponentActivity() {
     /** The GPU path's side of the encoder; called on its GL thread only. */
     private val gpuFrames = object : GpuCameraPipeline.Frames {
         private var encoder: H264Encoder? = null
+        private val replaced = mutableListOf<H264Encoder>()
         private var lastFrameAt = 0L
         private var size = Size(0, 0)
 
@@ -618,10 +626,15 @@ class MainActivity : ComponentActivity() {
             if (current != null && current.matches(size.width, size.height, requestedFps)) {
                 return current
             }
-            current?.close()
+            current?.let { replaced += it }
             encoder = null
             return H264Encoder(size.width, size.height, requestedFps, surfaceInput = true)
                 .also { encoder = it }
+        }
+
+        override fun closeReplacedEncoders() {
+            replaced.forEach { it.close() }
+            replaced.clear()
         }
 
         override fun wantsFrame(timestampNs: Long): Boolean {
@@ -639,6 +652,7 @@ class MainActivity : ComponentActivity() {
         }
 
         fun close() {
+            closeReplacedEncoders()
             encoder?.close()
             encoder = null
         }
