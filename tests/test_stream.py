@@ -2,12 +2,15 @@ import errno
 import io
 import socket
 import struct
+import sys
 import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from PIL import Image
 
+from camera_studio import adb, stream
 from camera_studio.stream import (
     STUDIO_DISCOVERY_REPLY,
     STUDIO_DISCOVERY_REQUEST,
@@ -242,6 +245,39 @@ class H264TransportTests(unittest.TestCase):
                     local_addresses=["127.0.0.1"],
                     broadcast_address="127.0.0.1",
                 )
+
+    def test_macos_probes_each_network_on_its_own_broadcast_address(self) -> None:
+        interfaces = [
+            ("127.0.0.1", None),
+            ("192.168.1.20", "192.168.1.255"),
+            ("10.80.41.7", "10.80.41.255"),
+            ("240.0.0.2", None),
+        ]
+        with (
+            mock.patch.object(stream.sys, "platform", "darwin"),
+            mock.patch.object(stream, "_macos_ipv4_interfaces", return_value=interfaces),
+        ):
+            targets = stream._usb_probe_targets("255.255.255.255")
+
+        self.assertEqual(
+            targets,
+            {"192.168.1.20": "192.168.1.255", "10.80.41.7": "10.80.41.255"},
+        )
+
+    def test_finds_android_studio_adb_on_macos_without_a_shell_path(self) -> None:
+        sdk_adb = Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb"
+        with (
+            mock.patch.object(adb.sys, "platform", "darwin"),
+            mock.patch.object(adb.shutil, "which", return_value=None),
+            mock.patch.object(Path, "is_file", lambda path: path == sdk_adb),
+        ):
+            self.assertEqual(adb.find_adb(), sdk_adb)
+
+    @unittest.skipUnless(sys.platform == "darwin", "reads macOS network interfaces")
+    def test_lists_macos_network_interfaces(self) -> None:
+        addresses = [address for address, _ in stream._macos_ipv4_interfaces()]
+
+        self.assertIn("127.0.0.1", addresses)
 
     def test_wifi_server_receives_h264_and_returns_camera_control(self) -> None:
         access_unit = b"\x00\x00\x00\x01\x65keyframe"

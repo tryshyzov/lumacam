@@ -65,6 +65,17 @@ def find_adb() -> Path | None:
     if adb_path:
         return Path(adb_path)
 
+    if sys.platform == "darwin":
+        # An app opened from Finder does not get the shell's PATH.
+        for executable in (
+            Path("/opt/homebrew/bin/adb"),
+            Path("/usr/local/bin/adb"),
+            Path.home() / "Library" / "Android" / "sdk" / "platform-tools" / "adb",
+        ):
+            if executable.is_file():
+                return executable
+        return None
+
     package_root = (
         Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
     )

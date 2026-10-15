@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import errno
 import json
 import http.client
@@ -8,6 +10,7 @@ import select
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -95,14 +98,12 @@ def discover_usb_camera(
     only senders that reach it through its USB-tethering interface.
     """
     if local_addresses is None:
-        local_addresses = {
-            result[4][0]
-            for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
-            if not ipaddress.IPv4Address(result[4][0]).is_loopback
-        }
-    probes: list[socket.socket] = []
+        targets = _usb_probe_targets(broadcast_address)
+    else:
+        targets = {address: broadcast_address for address in local_addresses}
+    probes: dict[socket.socket, str] = {}
     try:
-        for address in local_addresses:
+        for address, target in targets.items():
             probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -111,16 +112,16 @@ def discover_usb_camera(
             except OSError:
                 probe.close()
                 continue
-            probes.append(probe)
+            probes[probe] = target
 
         deadline = time.monotonic() + timeout
         while probes and not stop.is_set() and time.monotonic() < deadline:
-            for probe in probes:
+            for probe, target in probes.items():
                 try:
-                    probe.sendto(USB_DISCOVERY_REQUEST, (broadcast_address, port))
+                    probe.sendto(USB_DISCOVERY_REQUEST, (target, port))
                 except OSError:
                     pass
-            readable, _, _ = select.select(probes, [], [], 0.5)
+            readable, _, _ = select.select(list(probes), [], [], 0.5)
             for probe in readable:
                 try:
                     reply, sender = probe.recvfrom(64)
@@ -135,6 +136,79 @@ def discover_usb_camera(
         "Телефон не найден по USB. Подключите кабель, включите на телефоне "
         "«USB-модем» и нажмите «Начать трансляцию» в LumaLink Companion."
     )
+
+
+def _usb_probe_targets(broadcast_address: str) -> dict[str, str]:
+    """Map each local IPv4 address to where its USB discovery probe goes."""
+    if sys.platform == "darwin":
+        # macOS sends 255.255.255.255 out of the default route's interface
+        # whatever address the socket is bound to, so each probe goes to the
+        # broadcast address of its own network instead. The host name does not
+        # resolve to every interface there either, so ask the system for them.
+        # Tethering networks always broadcast; tunnels such as a VPN do not.
+        return {
+            address: broadcast
+            for address, broadcast in _macos_ipv4_interfaces()
+            if broadcast and not ipaddress.IPv4Address(address).is_loopback
+        }
+    return {
+        result[4][0]: broadcast_address
+        for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        if not ipaddress.IPv4Address(result[4][0]).is_loopback
+    }
+
+
+class _SockaddrIn(ctypes.Structure):
+    # The BSD layout macOS uses: a length byte comes before the family.
+    _fields_ = [
+        ("sin_len", ctypes.c_uint8),
+        ("sin_family", ctypes.c_uint8),
+        ("sin_port", ctypes.c_uint16),
+        ("sin_addr", ctypes.c_uint8 * 4),
+    ]
+
+
+class _Ifaddrs(ctypes.Structure):
+    pass
+
+
+_Ifaddrs._fields_ = [
+    ("ifa_next", ctypes.POINTER(_Ifaddrs)),
+    ("ifa_name", ctypes.c_char_p),
+    ("ifa_flags", ctypes.c_uint),
+    ("ifa_addr", ctypes.POINTER(_SockaddrIn)),
+    ("ifa_netmask", ctypes.POINTER(_SockaddrIn)),
+    ("ifa_dstaddr", ctypes.POINTER(_SockaddrIn)),
+    ("ifa_data", ctypes.c_void_p),
+]
+_IFF_UP = 0x1
+_IFF_BROADCAST = 0x2
+
+
+def _macos_ipv4_interfaces() -> list[tuple[str, str | None]]:
+    """The address and broadcast address of every IPv4 interface that is up."""
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    head = ctypes.POINTER(_Ifaddrs)()
+    if libc.getifaddrs(ctypes.byref(head)) != 0:
+        return []
+    interfaces: list[tuple[str, str | None]] = []
+    try:
+        entry = head
+        while entry:
+            item = entry.contents
+            entry = item.ifa_next
+            if not item.ifa_addr or item.ifa_addr.contents.sin_family != socket.AF_INET:
+                continue
+            if not item.ifa_flags & _IFF_UP:
+                continue
+            address = socket.inet_ntoa(bytes(item.ifa_addr.contents.sin_addr))
+            broadcast = None
+            if item.ifa_flags & _IFF_BROADCAST and item.ifa_dstaddr:
+                broadcast = socket.inet_ntoa(bytes(item.ifa_dstaddr.contents.sin_addr))
+            interfaces.append((address, broadcast))
+    finally:
+        libc.freeifaddrs(head)
+    return interfaces
 
 
 def correct_stream_orientation(image: Image.Image) -> Image.Image:
