@@ -975,8 +975,8 @@ class MainWindow(QWidget):
         """Called on the network thread for every H.264 access unit."""
         if not self.streaming:
             return
-        for image in self.decoder.decode(frame):
-            image = correct_stream_orientation(image)
+        for decoded in self.decoder.decode(frame):
+            image = correct_stream_orientation(decoded.to_image())
             virtual_camera = self.virtual_camera
             if self.paused:
                 # Keep decoding so the picture is intact on resume, but show
@@ -987,7 +987,10 @@ class MainWindow(QWidget):
                 continue
             self.latest_image = image
             if virtual_camera is not None:
-                virtual_camera.submit(self._fading_out(image))
+                faded = self._fading_out(image)
+                # Without an overlay the camera takes the decoded frame,
+                # which it scales faster than the full-size picture.
+                virtual_camera.submit(decoded if faded is image else faded)
             try:
                 self.frames.put_nowait(image)
             except queue.Full:

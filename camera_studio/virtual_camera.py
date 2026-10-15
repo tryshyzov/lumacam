@@ -27,7 +27,7 @@ class VirtualCameraOutput:
     ) -> None:
         self._on_status = on_status
         self._camera_factory = camera_factory
-        self._frames: queue.Queue[Image.Image] = queue.Queue(maxsize=1)
+        self._frames: queue.Queue[Image.Image | av.VideoFrame] = queue.Queue(maxsize=1)
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -43,7 +43,12 @@ class VirtualCameraOutput:
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=2)
 
-    def submit(self, image: Image.Image) -> None:
+    def submit(self, image: Image.Image | av.VideoFrame) -> None:
+        """Show a picture, or a frame straight from the H.264 decoder.
+
+        A decoded frame is still upside down, as the phone sends it (see
+        stream.correct_stream_orientation); the camera turns it.
+        """
         if self._stop.is_set():
             return
         try:
@@ -71,7 +76,6 @@ class VirtualCameraOutput:
                                 image = self._frames.get_nowait()
                             except queue.Empty:
                                 break
-                        image = image.convert("RGB")
                         frame = _to_output_frame(image)
                         last_frame_at = time.monotonic()
                     except queue.Empty:
@@ -91,13 +95,29 @@ class VirtualCameraOutput:
             self._on_status("Виртуальная камера остановлена", False)
 
 
-def _to_output_frame(image: Image.Image) -> np.ndarray:
+def _to_output_frame(image: Image.Image | av.VideoFrame) -> np.ndarray:
     """The picture fitted into the camera's frame, centered on black.
 
     Shrinking a 1080p picture with Pillow took about 6 ms; FFmpeg's scaler,
     already here for decoding, does it in about 2. The size is the one
     Image.thumbnail picks, so a smaller picture is never enlarged.
+
+    A decoded frame is converted from YUV and scaled in one pass, then
+    turned upright as a view with its pixels in reverse order: the camera
+    output copies the frame anyway, so it is never copied here. With the
+    LumaLink Camera output this took 4.5 ms a frame on a Windows PC, against
+    10.7 ms through the full-size picture. Such a frame is not C-contiguous.
     """
+    if isinstance(image, av.VideoFrame):
+        width, height = _fitted_size(image.width, image.height)
+        scaled = image.reformat(
+            width=width, height=height, format="rgb24", interpolation="BILINEAR"
+        ).to_ndarray()
+        # Turned by 180 degrees, as stream.correct_stream_orientation does.
+        picture = scaled.reshape(-1, 3)[::-1].reshape(height, width, 3)
+        if (width, height) == (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+            return picture
+        return _centered(picture)
     image = image.convert("RGB")
     if image.size == (OUTPUT_WIDTH, OUTPUT_HEIGHT):
         return np.array(image, dtype=np.uint8, copy=True, order="C")
@@ -110,6 +130,12 @@ def _to_output_frame(image: Image.Image) -> np.ndarray:
             .reformat(width=width, height=height, format="rgb24", interpolation="BILINEAR")
             .to_ndarray()
         )
+    return _centered(picture)
+
+
+def _centered(picture: np.ndarray) -> np.ndarray:
+    """The picture in the middle of a black camera frame."""
+    height, width = picture.shape[:2]
     frame = np.zeros((OUTPUT_HEIGHT, OUTPUT_WIDTH, 3), dtype=np.uint8)
     left = (OUTPUT_WIDTH - width) // 2
     top = (OUTPUT_HEIGHT - height) // 2

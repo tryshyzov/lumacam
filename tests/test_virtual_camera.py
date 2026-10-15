@@ -2,10 +2,12 @@ import threading
 import time
 import unittest
 
+import av
 import numpy as np
 from PIL import Image
 
 from camera_studio import virtual_camera
+from camera_studio.stream import correct_stream_orientation
 from camera_studio.virtual_camera import (
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
@@ -107,6 +109,26 @@ class OutputFrameTests(unittest.TestCase):
         canvas = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT))
         canvas.paste(image, ((OUTPUT_WIDTH - image.width) // 2, (OUTPUT_HEIGHT - image.height) // 2))
         return np.asarray(canvas)
+
+    def test_decoded_frames_match_the_turned_picture(self) -> None:
+        rng = np.random.default_rng(2)
+        for size in ((1920, 1080), (1080, 1920), (640, 480), (1280, 720)):
+            with self.subTest(size=size):
+                small = rng.integers(0, 256, (9, 16, 3), dtype=np.uint8)
+                image = Image.fromarray(small).resize(size, Image.Resampling.BICUBIC)
+                # As the decoder hands it over: YUV, and upside down.
+                decoded = av.VideoFrame.from_image(image).reformat(format="yuv420p")
+
+                frame = virtual_camera._to_output_frame(decoded)
+                expected = virtual_camera._to_output_frame(
+                    correct_stream_orientation(decoded.to_image())
+                )
+
+                # A view in reverse order, which the camera outputs copy.
+                self.assertEqual(frame.shape, (OUTPUT_HEIGHT, OUTPUT_WIDTH, 3))
+                difference = np.abs(frame.astype(int) - expected.astype(int))
+                self.assertLess(difference.mean(), 2)
+                self.assertTrue(((frame == 0).all(axis=2) == (expected == 0).all(axis=2)).mean() > 0.999)
 
     def test_matches_pillow_for_every_shape(self) -> None:
         rng = np.random.default_rng(1)
