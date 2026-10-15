@@ -17,6 +17,9 @@ internal class H264Encoder(
 ) {
     private val codec: MediaCodec
     private var codecConfig = ByteArray(0)
+    // Whether the next codec-config buffer starts a new SPS/PPS set rather
+    // than continuing one the encoder split over several buffers.
+    private var codecConfigComplete = true
     private var lastPresentationTimeUs = 0L
 
     init {
@@ -48,7 +51,7 @@ internal class H264Encoder(
         Log.i(TAG, "Using H.264 encoder $codecName for ${width}x$height at $fps FPS")
     }
 
-    fun encode(nv21: ByteArray): List<ByteArray> {
+    fun encode(nv21: ByteArray): List<EncodedFrame> {
         require(nv21.size == width * height * 3 / 2) {
             "Неверный размер входного кадра H.264"
         }
@@ -58,7 +61,7 @@ internal class H264Encoder(
         return drainOutput()
     }
 
-    fun encode(image: ImageProxy): List<ByteArray> {
+    fun encode(image: ImageProxy): List<EncodedFrame> {
         require(image.width == width && image.height == height) {
             "Размер кадра камеры не совпадает с конфигурацией H.264"
         }
@@ -91,8 +94,8 @@ internal class H264Encoder(
         }
     }
 
-    private fun drainOutput(): List<ByteArray> {
-        val packets = mutableListOf<ByteArray>()
+    private fun drainOutput(): List<EncodedFrame> {
+        val packets = mutableListOf<EncodedFrame>()
         val info = MediaCodec.BufferInfo()
         while (true) {
             val outputIndex = codec.dequeueOutputBuffer(info, OUTPUT_TIMEOUT_US)
@@ -100,6 +103,7 @@ internal class H264Encoder(
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
                 outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     codecConfig = codecSpecificData(codec.outputFormat)
+                    codecConfigComplete = true
                 }
                 outputIndex >= 0 -> {
                     try {
@@ -110,16 +114,18 @@ internal class H264Encoder(
                             val bytes = ByteArray(info.size)
                             output.get(bytes)
                             if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                codecConfig += bytes
+                                // Replace the parameter sets instead of appending, so
+                                // an encoder that repeats them cannot grow every key
+                                // frame without bound.
+                                codecConfig = if (codecConfigComplete) bytes else codecConfig + bytes
+                                codecConfigComplete = false
                             } else {
-                                packets += if (
-                                    info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0 &&
-                                    codecConfig.isNotEmpty()
-                                ) {
-                                    codecConfig + bytes
-                                } else {
-                                    bytes
-                                }
+                                codecConfigComplete = true
+                                val keyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                                packets += EncodedFrame(
+                                    if (keyFrame && codecConfig.isNotEmpty()) codecConfig + bytes else bytes,
+                                    keyFrame,
+                                )
                             }
                         }
                     } finally {

@@ -20,6 +20,9 @@ internal enum class LinkEvent {
     /** Wi-Fi: no LumaLink Studio answered the discovery probe. */
     NOT_FOUND,
 
+    /** Wi-Fi: the computer stopped answering, without closing the connection. */
+    NO_ANSWER,
+
     /** The connection failed; the detail holds the reason, if any. */
     FAILED,
 }

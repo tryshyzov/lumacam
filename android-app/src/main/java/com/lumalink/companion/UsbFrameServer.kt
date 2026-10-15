@@ -28,10 +28,10 @@ import kotlin.concurrent.thread
 internal class UsbFrameServer(
     private val onStatus: LinkListener,
     private val onControl: (JSONObject) -> Unit,
+    onKeyFrameNeeded: () -> Unit,
 ) {
-    private val frameLock = Object()
+    private val frames = LatestFrame(onKeyFrameNeeded)
     private val clients = Collections.synchronizedSet(mutableSetOf<Socket>())
-    @Volatile private var latestFrame: ByteArray? = null
     @Volatile private var running = false
     private var listener: ServerSocket? = null
     private var discovery: DatagramSocket? = null
@@ -86,11 +86,8 @@ internal class UsbFrameServer(
         reportWaiting(usbTetherInterfaces().isNotEmpty())
     }
 
-    fun publishFrame(frame: ByteArray) {
-        latestFrame = frame
-        synchronized(frameLock) {
-            frameLock.notifyAll()
-        }
+    fun publishFrame(frame: EncodedFrame) {
+        frames.publish(frame)
     }
 
     fun stop() {
@@ -115,9 +112,7 @@ internal class UsbFrameServer(
             clients.clear()
         }
         clientExecutor.shutdownNow()
-        synchronized(frameLock) {
-            frameLock.notifyAll()
-        }
+        frames.close()
         onStatus(LinkEvent.STOPPED, null)
     }
 
@@ -189,6 +184,9 @@ internal class UsbFrameServer(
             var connected = false
             try {
                 socket.tcpNoDelay = true
+                // The computer sends its handshake and acknowledges each frame
+                // at once; give up on one that stopped answering.
+                socket.soTimeout = ACK_TIMEOUT_MS
                 val input = DataInputStream(socket.getInputStream())
                 val handshake = ByteArray(PROTOCOL_MAGIC.size)
                 input.readFully(handshake)
@@ -199,15 +197,9 @@ internal class UsbFrameServer(
                 val output = DataOutputStream(socket.getOutputStream())
                 connected = true
                 onStatus(LinkEvent.CONNECTED, null)
-                var sentFrame: ByteArray? = null
-                while (running && !socket.isClosed) {
-                    val frame = synchronized(frameLock) {
-                        while (running && latestFrame === sentFrame) {
-                            frameLock.wait(500)
-                        }
-                        latestFrame
-                    } ?: continue
-                    if (frame === sentFrame) continue
+                val reader = frames.Reader()
+                while (!socket.isClosed) {
+                    val frame = reader.next { running } ?: break
                     output.writeInt(frame.size)
                     output.write(frame)
                     output.flush()
@@ -223,7 +215,6 @@ internal class UsbFrameServer(
                         input.readFully(payload)
                         onControl(JSONObject(payload.toString(Charsets.UTF_8)))
                     }
-                    sentFrame = frame
                 }
             } catch (_: Exception) {
                 // Disconnecting the desktop only terminates its stream session.
@@ -244,6 +235,7 @@ internal class UsbFrameServer(
         private val DISCOVERY_REPLY = "LUMALINK-CAMERA-1".toByteArray(Charsets.US_ASCII)
         private val USB_INTERFACE_PREFIXES = listOf("rndis", "usb", "ncm")
         private const val TETHER_POLL_MS = 1_000
+        private const val ACK_TIMEOUT_MS = 5_000
         private const val FRAME_ACK = 0x06
         private const val MAX_CONTROL_SIZE = 16_384
         private const val TAG = "LumaLinkUsb"
