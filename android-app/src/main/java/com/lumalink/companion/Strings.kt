@@ -45,6 +45,21 @@ internal object Strings {
         "usbFailed" to "Не удалось открыть USB-канал: %s",
         "badHost" to "Введите IP-адрес компьютера в локальной сети",
         "startFailed" to "Не удалось начать трансляцию: %s",
+        "updates" to "Обновления",
+        "updateCheck" to "Проверить",
+        "updateNow" to "Обновить",
+        "updateRetry" to "Повторить",
+        "updateChecking" to "Проверка обновлений…",
+        "updateLatest" to "Установлена последняя версия",
+        "updateAvailable" to "Доступна версия %s",
+        "updateDownloading" to "Загрузка версии %s… %d%%",
+        "updateInstalling" to "Установка версии %s… Если Play Защита предупредит о приложении, нажмите «Подробнее» → «Все равно установить».",
+        "updateBlocked" to "Установку остановила Play Защита. Нажмите «Обновить» и в её окне выберите «Подробнее» → «Все равно установить». Если такой кнопки нет, временно выключите сканирование приложений в Play Маркете (профиль → Play Защита → настройки), обновите и включите снова.",
+        "updateCheckFailed" to "Не удалось проверить обновления",
+        "updateFailed" to "Не удалось обновить: %s",
+        "updateCancelled" to "Обновление отменено",
+        "updateSignature" to "Обновление подписано другим ключом. Удалите приложение и установите его заново с GitHub.",
+        "updateAfterStream" to "Остановите трансляцию, чтобы обновить",
     )
 
     private val en = mapOf(
@@ -87,6 +102,21 @@ internal object Strings {
         "usbFailed" to "Could not open the USB channel: %s",
         "badHost" to "Enter the computer's local network IP address",
         "startFailed" to "Could not start streaming: %s",
+        "updates" to "Updates",
+        "updateCheck" to "Check",
+        "updateNow" to "Update",
+        "updateRetry" to "Retry",
+        "updateChecking" to "Checking for updates…",
+        "updateLatest" to "You have the latest version",
+        "updateAvailable" to "Version %s is available",
+        "updateDownloading" to "Downloading version %s… %d%%",
+        "updateInstalling" to "Installing version %s… If Play Protect warns about the app, choose More details → Install anyway.",
+        "updateBlocked" to "Play Protect stopped the install. Choose Update, then More details → Install anyway in its window. If there is no such button, turn off app scanning for a moment in the Play Store (profile → Play Protect → settings), update, then turn it back on.",
+        "updateCheckFailed" to "Could not check for updates",
+        "updateFailed" to "Could not update: %s",
+        "updateCancelled" to "The update was cancelled",
+        "updateSignature" to "The update is signed with a different key. Uninstall the app and install it again from GitHub.",
+        "updateAfterStream" to "Stop streaming to update",
     )
 
     private val tables = mapOf("ru" to ru, "en" to en)

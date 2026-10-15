@@ -1,6 +1,7 @@
 package com.lumalink.companion
 
 import android.Manifest
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -65,6 +66,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var languageControl: SegmentedControl
     private lateinit var keepAwakeToggle: ToggleView
     private lateinit var settingsBack: OnBackPressedCallback
+    private lateinit var updateBanner: LinearLayout
+    private lateinit var updateBannerText: TextView
+    private lateinit var updateBannerButton: TextView
+    private lateinit var updateStatus: TextView
+    private lateinit var updateButton: TextView
+    private var updater: AppUpdater? = null
     private val translated = mutableListOf<Pair<(String) -> Unit, String>>()
     private val preferences by lazy { getSharedPreferences(PREFERENCES, MODE_PRIVATE) }
     private var language = "ru"
@@ -117,7 +124,12 @@ class MainActivity : ComponentActivity() {
         // adb shell am start -n com.lumalink.companion/.MainActivity --ez force_copy true
         gpuFailed = intent.getBooleanExtra(EXTRA_FORCE_COPY, false)
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
+        // Debug builds are signed with another key and cannot take a release over them.
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
+            updater = AppUpdater(this, installedVersion() ?: "0") { render() }
+        }
         buildScreen()
+        updater?.check()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -128,6 +140,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        updater?.close()
         publisher?.stop()
         localServer?.stop()
         videoEncoder?.close()
@@ -198,6 +211,29 @@ class MainActivity : ComponentActivity() {
         translate("settings") { settingsButton.contentDescription = it }
         topBar.addView(settingsButton, LinearLayout.LayoutParams(dp(36), dp(36)))
         column.addView(topBar, matchWidth())
+
+        // A new version, offered above the picture while not streaming.
+        updateBanner = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Palette.SHEET)
+            setPadding(dp(12), dp(4), dp(8), dp(4))
+            visibility = View.GONE
+        }
+        updateBannerText = label(12f).apply { maxLines = 2 }
+        updateBanner.addView(
+            updateBannerText,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        updateBannerButton = smallButton { onUpdateButton() }
+        updateBanner.addView(
+            updateBannerButton,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginStart = dp(8) },
+        )
+        column.addView(updateBanner, matchWidth())
 
         // The camera picture on black, with the active lens in the corner.
         val stage = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
@@ -309,6 +345,7 @@ class MainActivity : ComponentActivity() {
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
             val bottom = maxOf(bars.bottom, keyboard.bottom)
             topBar.setPadding(dp(12) + bars.left, dp(2) + bars.top, dp(2) + bars.right, dp(2))
+            updateBanner.setPadding(dp(12) + bars.left, dp(4), dp(8) + bars.right, dp(4))
             sheet.setPadding(dp(12) + bars.left, dp(10), dp(12) + bars.right, dp(10) + bottom)
             settingsPanel.setPadding(dp(12) + bars.left, dp(14), dp(12) + bars.right, dp(14) + bars.bottom)
             insets
@@ -317,6 +354,20 @@ class MainActivity : ComponentActivity() {
         ViewCompat.requestApplyInsets(root)
         render()
     }
+
+    private fun smallButton(onClick: () -> Unit): TextView =
+        label(12f, bold = true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(28)
+            setPadding(dp(10), 0, dp(10), 0)
+            isClickable = true
+            isFocusable = true
+            background = pressable(
+                rounded(Color.TRANSPARENT, dp(6).toFloat(), Palette.BORDER_CONTROL, dp(1)),
+                Palette.PRESS_ON_DARK,
+            )
+            setOnClickListener { onClick() }
+        }
 
     private fun groupTitle(key: String): TextView =
         label(12f, Palette.TEXT_SECONDARY, bold = true).apply {
@@ -385,13 +436,30 @@ class MainActivity : ComponentActivity() {
         awakeRow.addView(keepAwakeToggle)
         settingsPanel.addView(awakeRow, matchWidth(6))
 
-        val version = try {
-            packageManager.getPackageInfo(packageName, 0).versionName
-        } catch (_: Exception) {
-            null
+        if (updater != null) {
+            settingsPanel.addView(groupTitle("updates"), matchWidth(14))
+            val updateRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(32)
+            }
+            updateStatus = label(13f)
+            updateRow.addView(updateStatus, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            updateButton = smallButton { onUpdateButton() }
+            updateRow.addView(
+                updateButton,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = dp(8) },
+            )
+            settingsPanel.addView(updateRow, matchWidth(6))
         }
+
         settingsPanel.addView(
-            label(12f, Palette.TEXT_SECONDARY).apply { text = "LumaLink Companion ${version ?: ""}".trim() },
+            label(12f, Palette.TEXT_SECONDARY).apply {
+                text = "LumaLink Companion ${installedVersion() ?: ""}".trim()
+            },
             matchWidth(14),
         )
         settingsOverlay.addView(
@@ -412,6 +480,65 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, settingsBack)
     }
 
+    private fun installedVersion(): String? =
+        try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun streaming(): Boolean = publisher != null || localServer != null
+
+    /** The release the update button would install, if any. */
+    private fun offeredRelease(): AppRelease? =
+        when (val state = updater?.state) {
+            is UpdateState.Available -> state.release
+            is UpdateState.Failed -> state.release
+            else -> null
+        }
+
+    private fun onUpdateButton() {
+        val release = offeredRelease()
+        when {
+            release == null -> updater?.check()
+            // Installing replaces and stops this app, so never mid-stream.
+            streaming() -> showNotice(t("updateAfterStream"))
+            else -> updater?.install(release)
+        }
+    }
+
+    /** The update's state as one line, and the action its button offers (null: no button). */
+    private fun describeUpdate(state: UpdateState): Pair<String, String?> =
+        when (state) {
+            UpdateState.Idle, UpdateState.UpToDate -> t("updateLatest") to t("updateCheck")
+            UpdateState.Checking -> t("updateChecking") to null
+            is UpdateState.Available -> t("updateAvailable", state.release.version) to t("updateNow")
+            is UpdateState.Downloading -> t("updateDownloading", state.release.version, state.percent) to null
+            is UpdateState.Installing -> t("updateInstalling", state.release.version) to null
+            is UpdateState.Failed -> when {
+                state.release == null -> t("updateCheckFailed") to t("updateRetry")
+                state.reason == AppUpdater.SIGNATURE_MISMATCH -> t("updateSignature") to null
+                state.reason == AppUpdater.BLOCKED -> t("updateBlocked") to t("updateNow")
+                state.reason == null -> t("updateCancelled") to t("updateNow")
+                else -> t("updateFailed", state.reason) to t("updateRetry")
+            }
+        }
+
+    private fun renderUpdate(streaming: Boolean) {
+        val state = updater?.state ?: return
+        val (text, action) = describeUpdate(state)
+        updateStatus.text = text
+        updateButton.text = action ?: ""
+        updateButton.visibility = if (action == null) View.GONE else View.VISIBLE
+        // The banner carries only news: an offer, its progress, or why it failed.
+        val news = state is UpdateState.Available || state is UpdateState.Downloading ||
+            state is UpdateState.Installing || (state is UpdateState.Failed && state.release != null)
+        updateBanner.visibility = if (news && !streaming) View.VISIBLE else View.GONE
+        updateBannerText.text = text
+        updateBannerButton.text = action ?: ""
+        updateBannerButton.visibility = updateButton.visibility
+    }
+
     private fun openSettings() {
         settingsOverlay.visibility = View.VISIBLE
         settingsBack.isEnabled = true
@@ -426,7 +553,8 @@ class MainActivity : ComponentActivity() {
     private fun render() {
         if (!::settingsPanel.isInitialized) return
         for ((setter, key) in translated) setter(t(key))
-        val streaming = publisher != null || localServer != null
+        val streaming = streaming()
+        renderUpdate(streaming)
         val wifi = modeControl.value == MODE_WIFI
 
         val problem = cameraProblem
