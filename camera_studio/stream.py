@@ -4,6 +4,7 @@ import ctypes
 import ctypes.util
 import errno
 import json
+import os
 import http.client
 import ipaddress
 import select
@@ -22,6 +23,8 @@ from PIL import Image
 from camera_studio.adb import AdbForward, open_adb_forward
 
 
+HWACCEL_VARIABLE = "LUMALINK_HWACCEL"
+HWACCEL_DEVICES = {"darwin": ("videotoolbox",), "win32": ("d3d11va", "dxva2")}
 USB_PROTOCOL_MAGIC = b"LUMAAVC1"
 USB_FRAME_ACK = b"\x06"
 USB_DISCOVERY_PORT = 8766
@@ -622,8 +625,36 @@ class H264Decoder:
                 "Декодер H.264 недоступен. Переустановите LumaLink Studio."
             ) from error
         self._av = av
-        self._codec = av.CodecContext.create("h264", "r")
-        self._codec.thread_count = 1
+        self.accelerator = None
+        self._codec = self._hardware_codec() if os.environ.get(HWACCEL_VARIABLE) == "1" else None
+        if self._codec is None:
+            self._codec = av.CodecContext.create("h264", "r")
+            # Frame threading would hand frames over several frames late.
+            self._codec.thread_count = 1
+
+    def _hardware_codec(self):
+        """A decoder on the GPU, or None. Off unless LUMALINK_HWACCEL=1.
+
+        Measured at 1080p it saves about a millisecond of a 33 ms frame on a
+        Mac (VideoToolbox) and on Windows (D3D11VA, DXVA2): copying the picture
+        back from video memory costs most of the gain, so the software decoder
+        stays the default and this is for checking a given computer.
+        """
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+
+        available = hwdevices_available()
+        for device in HWACCEL_DEVICES.get(sys.platform, ()):
+            if device not in available:
+                continue
+            try:
+                codec = self._av.CodecContext.create(
+                    "h264", "r", hwaccel=HWAccel(device_type=device, allow_software_fallback=True)
+                )
+            except Exception:
+                continue
+            self.accelerator = device
+            return codec
+        return None
 
     def decode(self, packet: bytes):
         try:

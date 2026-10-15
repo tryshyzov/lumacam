@@ -5,8 +5,8 @@ import unittest
 import numpy as np
 from PIL import Image
 
+from camera_studio import virtual_camera
 from camera_studio.virtual_camera import (
-    OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
     VirtualCameraOutput,
@@ -95,3 +95,35 @@ class VirtualCameraOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutputFrameTests(unittest.TestCase):
+    """The FFmpeg scaler gives what Pillow's thumbnail on a black canvas gave."""
+
+    @staticmethod
+    def pillow_reference(image: Image.Image) -> np.ndarray:
+        image = image.copy()
+        image.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.Resampling.BILINEAR)
+        canvas = Image.new("RGB", (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+        canvas.paste(image, ((OUTPUT_WIDTH - image.width) // 2, (OUTPUT_HEIGHT - image.height) // 2))
+        return np.asarray(canvas)
+
+    def test_matches_pillow_for_every_shape(self) -> None:
+        rng = np.random.default_rng(1)
+        for size in ((1920, 1080), (1080, 1920), (1440, 1080), (640, 480), (1280, 720), (2560, 1440)):
+            with self.subTest(size=size):
+                # Smooth content, like a camera picture.
+                small = rng.integers(0, 256, (9, 16, 3), dtype=np.uint8)
+                image = Image.fromarray(small).resize(size, Image.Resampling.BICUBIC)
+
+                frame = virtual_camera._to_output_frame(image)
+                expected = self.pillow_reference(image)
+
+                self.assertEqual(frame.shape, (OUTPUT_HEIGHT, OUTPUT_WIDTH, 3))
+                self.assertEqual(frame.dtype, np.uint8)
+                self.assertTrue(frame.flags.c_contiguous)
+                difference = np.abs(frame.astype(int) - expected.astype(int))
+                self.assertLess(difference.mean(), 1.5)
+                # The black bars are exactly where they were.
+                self.assertTrue(((frame == 0).all(axis=2) == (expected == 0).all(axis=2)).mean() > 0.999)
+
