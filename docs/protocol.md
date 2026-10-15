@@ -60,11 +60,18 @@ Rules the phone app must follow:
   other frames after a gap and when a connection starts, asks the encoder for
   a key frame (at most every 300 ms) and sends it with SPS and PPS in front
   (`LatestFrame.kt`).
+- **The picture size can change mid-stream.** The video follows the way the
+  phone is held, so a quarter turn swaps width and height (1280×720 becomes
+  720×1280). The phone then starts a new encoder, whose first frame is a key
+  frame with the new SPS and PPS; the desktop decoder picks the size up from
+  them. Receivers must not assume one size per connection; the desktop fits
+  each picture into its preview and into the virtual camera's 1280×720 frame.
 
 Orientation: the desktop rotates every decoded picture by 180° before showing
-it. This compensates for how the Android app feeds frames to its encoder. A new
-phone app has to deliver the same orientation, that is, upside down relative
-to the scene, or the desktop needs a per-client setting.
+it. The Android app encodes the picture turned half a turn from the way the
+phone is held (`HeldRotation.streamTarget`) to match. A new phone app has to
+deliver the same orientation, that is, upside down relative to the scene, or
+the desktop needs a per-client setting.
 
 The desktop treats a connection as broken after 5 seconds without a frame.
 The phone likewise gives up after 5 seconds without an acknowledgement, so a
