@@ -4,6 +4,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -121,6 +122,28 @@ class H264TransportTests(unittest.TestCase):
             self.assertEqual(control_payloads, [encode_control_payload(command)])
         finally:
             receiver.stop()
+
+    def test_stopping_wakes_a_reader_blocked_on_the_socket(self) -> None:
+        # Closing right after the shutdown left about one reader in ten
+        # waiting out its timeout on macOS; repeat to catch such a race.
+        for _ in range(50):
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            connection = socket.create_connection(listener.getsockname())
+            peer, _ = listener.accept()
+            connection.settimeout(5)
+            reader = threading.Thread(target=lambda: connection.recv(4), daemon=True)
+            reader.start()
+            time.sleep(0.001)
+
+            stream._interrupt(connection)
+            reader.join(1)
+
+            alive = reader.is_alive()
+            for item in (connection, peer, listener):
+                item.close()
+            self.assertFalse(alive)
 
     def test_usb_receiver_falls_back_to_adb_when_tethering_is_blocked(self) -> None:
         access_unit = b"\x00\x00\x00\x01\x65keyframe"
