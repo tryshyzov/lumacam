@@ -171,14 +171,15 @@ internal class GpuCameraPipeline(
         }
     }
 
-    /** Stop and free the GL thread; [onReleased] runs on it first. */
+    /** Stop and free the GL thread; [onReleased] runs on it once nothing draws any more. */
     fun release(onReleased: () -> Unit = {}) {
         handler.post {
-            onReleased()
             destroySurface(previewSurface)
             destroySurface(encoderSurface)
             previewSurface = EGL14.EGL_NO_SURFACE
             encoderSurface = EGL14.EGL_NO_SURFACE
+            encoder = null
+            onReleased()
             cameraTexture?.release()
             cameraTexture = null
             if (display != EGL14.EGL_NO_DISPLAY) {
