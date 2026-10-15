@@ -34,3 +34,6 @@ design/
 
 # Built by macvirtualcam/build.sh
 macvirtualcam/build/
+
+# macOS Finder metadata
+.DS_Store
