@@ -518,6 +518,7 @@ class MainActivity : ComponentActivity() {
             is UpdateState.Failed -> when {
                 state.release == null -> t("updateCheckFailed") to t("updateRetry")
                 state.reason == AppUpdater.SIGNATURE_MISMATCH -> t("updateSignature") to null
+                state.reason == AppUpdater.BLOCKED -> t("updateBlocked") to t("updateNow")
                 state.reason == null -> t("updateCancelled") to t("updateNow")
                 else -> t("updateFailed", state.reason) to t("updateRetry")
             }

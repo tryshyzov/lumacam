@@ -194,6 +194,8 @@ internal class AppUpdater(
                                 release,
                                 when {
                                     status == PackageInstaller.STATUS_FAILURE_ABORTED -> null
+                                    // Google Play Protect stops APKs it has not reviewed.
+                                    status == PackageInstaller.STATUS_FAILURE_BLOCKED -> BLOCKED
                                     // The public statuses lump a key mismatch in with
                                     // other conflicts, such as an older version code.
                                     message?.contains("UPDATE_INCOMPATIBLE") == true -> SIGNATURE_MISMATCH
@@ -225,6 +227,9 @@ internal class AppUpdater(
 
         /** Reason given when the installed app was signed with another key. */
         const val SIGNATURE_MISMATCH = "signature"
+
+        /** Reason given when the phone (usually Play Protect) blocked the install. */
+        const val BLOCKED = "blocked"
 
         /** The release described by GitHub's `releases/latest` answer, if it carries the phone app. */
         fun parseLatestRelease(json: String): AppRelease? {
