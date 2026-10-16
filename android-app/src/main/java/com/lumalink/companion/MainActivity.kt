@@ -910,7 +910,7 @@ class MainActivity : ComponentActivity() {
             for (key in command.keys()) cameraSettings.put(key, command.get(key))
             settingsSnapshot = JSONObject(cameraSettings.toString())
             val resolution = command.optString("resolution", requestedResolution)
-                .takeIf { it in setOf("480p", "720p", "1080p") }
+                .takeIf { it in RESOLUTIONS }
                 ?: requestedResolution
             val fps = command.optInt("fps", requestedFps).coerceIn(15, 60)
             val facing = if (command.optString("lens", "Задняя") == "Фронтальная") {
@@ -1110,7 +1110,13 @@ class MainActivity : ComponentActivity() {
                 token,
                 JSONObject()
                     .put("zoom", JSONArray().put(round2(range.start)).put(round2(range.endInclusive)))
-                    .put("fps", JSONArray(CameraModules.frameRates(main, size))),
+                    // Every resolution at once: discovery and "ok" are not sent
+                    // again when the computer switches resolution.
+                    .put("fps", JSONObject().apply {
+                        for (resolution in RESOLUTIONS) {
+                            put(resolution, JSONArray(CameraModules.frameRates(main, analysisSize(resolution))))
+                        }
+                    }),
             )
         }
         lensesSnapshot = lenses
@@ -1326,6 +1332,7 @@ class MainActivity : ComponentActivity() {
         private const val DEFAULT_RESOLUTION = "720p"
         private const val OLD_STUDIO_HINT_MS = 15_000L
         private const val RATE_LOG_INTERVAL_NS = 5_000_000_000L
+        private val RESOLUTIONS = listOf("480p", "720p", "1080p")
         private val DEFAULT_SETTINGS = JSONObject()
             .put("autofocus", true)
             .put("focus", 0.5)
