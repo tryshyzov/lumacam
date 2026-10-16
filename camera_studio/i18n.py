@@ -29,28 +29,19 @@ STRINGS: dict[str, dict[str, str]] = {
         "update_check_failed": "Не удалось проверить: нет связи с GitHub",
         "connect": "Подключить камеру",
         "disconnect": "Отключить камеру",
-        "stop_waiting": "Остановить ожидание",
+        "stop_waiting": "Не подключаться",
         "status_on": "Камера подключена по {link}",
         "status_off": "Камера не подключена",
-        "status_usb": "Ищем телефон по USB…",
-        "status_wifi": "Ждём телефон в сети Wi-Fi…",
-        "hint_usb": "Включите на телефоне «USB-модем» и нажмите «Начать трансляцию» в LumaLink Companion.",
-        "hint_usb_macos": (
-            "Включите на телефоне «Отладку по USB» и нажмите «Начать трансляцию» в LumaLink Companion. "
-            "«USB-модем» Mac понимает не на всех телефонах."
-        ),
-        "hint_usb_vpn": (
-            "VPN на этом компьютере блокирует локальную сеть, поэтому «USB-модем» не сработает. "
-            "Включите на телефоне «Отладку по USB» — подключение пойдёт в обход VPN. "
-            "Либо добавьте LumaLink Studio в исключения VPN."
-        ),
-        "hint_wifi": "На телефоне выберите Wi-Fi и нажмите «Начать трансляцию». Если компьютер не найдётся, введите там IP {host}. Только доверенная сеть.",
-        "hint_wifi_vpn": (
-            "VPN на этом компьютере блокирует локальную сеть: телефон не сможет подключиться по Wi-Fi. "
-            "Добавьте LumaLink Studio в исключения VPN или разрешите в нём доступ к локальной сети."
-        ),
-        "error_host": "Выберите в настройках адрес компьютера в локальной сети",
-        "error_port": "Не удалось открыть порт {port}: {error}",
+        "status_searching": "Ищем телефон…",
+        "status_connecting": "Подключаемся: {phone}…",
+        "status_allow": "Разрешите подключение на экране телефона",
+        "device": "Телефон",
+        "devices_none": "Телефоны не найдены",
+        "phone_unnamed": "Телефон",
+        "hint_usb": "Откройте LumaLink на телефоне: по кабелю с включённым «USB-модемом» или в той же сети Wi-Fi он найдётся сам. Wi-Fi — только доверенная сеть.",
+        "hint_usb_macos": "Откройте LumaLink на телефоне: по кабелю с включённой «Отладкой по USB» или в той же сети Wi-Fi он найдётся сам. «USB-модем» Mac понимает не на всех телефонах.",
+        "hint_usb_vpn": "VPN на этом компьютере блокирует локальную сеть: по «USB-модему» и Wi-Fi телефон не найдётся. Включите на телефоне «Отладку по USB» — подключение пойдёт в обход VPN. Либо добавьте LumaLink Studio в исключения VPN.",
+        "hint_wifi": "Видео по Wi-Fi не шифруется: подключайтесь только в доверенной сети.",
         "focus": "Фокус",
         "autofocus": "Автофокус",
         "manual_focus": "Ручной фокус",
@@ -76,13 +67,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "vcam_wait": "Включится сама, когда подключите камеру. Пока показывает заставку",
         "paused_note": "Пауза · стоп-кадр",
         "empty_title": "Камера не подключена",
-        "empty_text": "Запустите трансляцию в приложении на телефоне, затем нажмите «Подключить камеру».",
+        "empty_text": "Откройте LumaLink на телефоне — камера подключится сама.",
         "preview": "Предпросмотр",
         "opt_grid": "Сетка кадрирования",
         "opt_info": "Сведения о потоке поверх кадра",
         "opt_mirror": "Отразить по горизонтали",
-        "opt_host": "Адрес компьютера для Wi-Fi",
-        "opt_adb": "Обходить VPN через отладку по USB",
+        "opt_adb": "Искать телефоны через отладку по USB",
     },
     "en": {
         "pause": "Pause",
@@ -109,28 +99,19 @@ STRINGS: dict[str, dict[str, str]] = {
         "update_check_failed": "Could not check: GitHub is not reachable",
         "connect": "Connect camera",
         "disconnect": "Disconnect camera",
-        "stop_waiting": "Stop waiting",
+        "stop_waiting": "Don't connect",
         "status_on": "Camera connected over {link}",
         "status_off": "Camera not connected",
-        "status_usb": "Looking for the phone over USB…",
-        "status_wifi": "Waiting for the phone on Wi-Fi…",
-        "hint_usb": "Turn on USB tethering on the phone and start the stream in LumaLink Companion.",
-        "hint_usb_macos": (
-            "Turn on USB debugging on the phone and start the stream in LumaLink Companion. "
-            "Many phones' USB tethering does not work with a Mac."
-        ),
-        "hint_usb_vpn": (
-            "A VPN on this computer blocks the local network, so USB tethering will not work. "
-            "Turn on USB debugging on the phone and the connection will bypass the VPN. "
-            "Or add LumaLink Studio to the VPN exceptions."
-        ),
-        "hint_wifi": "Select Wi-Fi on the phone and start the stream. If the computer is not found, enter the IP {host} there. Trusted networks only.",
-        "hint_wifi_vpn": (
-            "A VPN on this computer blocks the local network: the phone cannot connect over Wi-Fi. "
-            "Add LumaLink Studio to the VPN exceptions or allow local network access in the VPN."
-        ),
-        "error_host": "Choose the computer's local network address in Settings",
-        "error_port": "Could not open port {port}: {error}",
+        "status_searching": "Looking for the phone…",
+        "status_connecting": "Connecting: {phone}…",
+        "status_allow": "Allow the connection on the phone's screen",
+        "device": "Phone",
+        "devices_none": "No phones found",
+        "phone_unnamed": "Phone",
+        "hint_usb": "Open LumaLink on the phone: over a cable with USB tethering on, or on the same Wi-Fi, it is found by itself. Use Wi-Fi only on a trusted network.",
+        "hint_usb_macos": "Open LumaLink on the phone: over a cable with USB debugging on, or on the same Wi-Fi, it is found by itself. Many phones' USB tethering does not work with a Mac.",
+        "hint_usb_vpn": "A VPN on this computer blocks the local network, so the phone is not found over USB tethering or Wi-Fi. Turn on USB debugging on the phone and the connection will bypass the VPN. Or add LumaLink Studio to the VPN exceptions.",
+        "hint_wifi": "Video over Wi-Fi is not encrypted: connect only on a trusted network.",
         "focus": "Focus",
         "autofocus": "Autofocus",
         "manual_focus": "Manual focus",
@@ -156,13 +137,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "vcam_wait": "Starts by itself when a camera connects. Showing the idle image for now",
         "paused_note": "Paused · still frame",
         "empty_title": "Camera not connected",
-        "empty_text": "Start the stream in the phone app, then select Connect camera.",
+        "empty_text": "Open LumaLink on the phone and the camera connects by itself.",
         "preview": "Preview",
         "opt_grid": "Framing grid",
         "opt_info": "Stream info over the frame",
         "opt_mirror": "Flip horizontally",
-        "opt_host": "Computer address for Wi-Fi",
-        "opt_adb": "Bypass VPN through USB debugging",
+        "opt_adb": "Find phones through USB debugging",
     },
 }
 

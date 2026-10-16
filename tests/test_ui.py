@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from camera_studio import ui  # noqa: E402
 from camera_studio.i18n import STRINGS, format_number, translate  # noqa: E402
+from camera_studio.phones import Phone  # noqa: E402
 from camera_studio.pause_frame import (  # noqa: E402
     paused_background,
     paused_frame,
@@ -50,6 +51,39 @@ class FakeReceiver:
 
     def stop(self) -> None:
         self.stopped = True
+
+
+class FakeFinder:
+    def __init__(self, computer, on_change, use_adb=None) -> None:
+        self.computer = computer
+        self.on_change = on_change
+        self.stopped = False
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class FakePhoneReceiver(FakeReceiver):
+    """Stands in for H264FrameReceiver; remembers whom it was asked to reach."""
+
+    instances: list["FakePhoneReceiver"] = []
+
+    def __init__(self, host, port, on_frame, on_status, usb, adb_fallback=True,
+                 phone=None, hello=None, on_accepted=None, on_refused=None) -> None:
+        super().__init__()
+        self.phone = phone
+        self.hello = hello
+        self.on_status = on_status
+        self.on_accepted = on_accepted
+        self.on_refused = on_refused
+        self.started = False
+        FakePhoneReceiver.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
 
 
 class TranslationTests(unittest.TestCase):
@@ -107,9 +141,16 @@ class MainWindowTests(unittest.TestCase):
 
     def setUp(self) -> None:
         FakeVirtualCamera.instances.clear()
-        patcher = mock.patch.object(ui, "VirtualCameraOutput", FakeVirtualCamera)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        FakePhoneReceiver.instances.clear()
+        for name, fake in (
+            ("VirtualCameraOutput", FakeVirtualCamera),
+            ("PhoneFinder", FakeFinder),
+            ("H264FrameReceiver", FakePhoneReceiver),
+            ("local_network_blocked", lambda: False),
+        ):
+            patcher = mock.patch.object(ui, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.settings_path = os.path.join(folder.name, "settings.ini")
@@ -123,6 +164,7 @@ class MainWindowTests(unittest.TestCase):
         receiver = FakeReceiver()
         self.window.receiver = receiver
         self.window.streaming = True
+        self.window.link = "USB"
         self.show_frame((10, 20, 30))
         return receiver
 
@@ -138,10 +180,13 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertFalse(window.controls.isEnabled())
         self.assertFalse(window.pause_button.isEnabled())
-        self.assertEqual(window.status_label.text(), "Камера не подключена")
-        self.assertEqual(window.connect_button.text(), "Подключить камеру")
+        self.assertEqual(window.status_label.text(), "Ищем телефон…")
+        self.assertEqual(window.connect_button.text(), "Не подключаться")
+        self.assertEqual(window.device_select.currentText(), "Телефоны не найдены")
+        self.assertFalse(window.device_select.isEnabled())
         self.assertFalse(window.preview.has_image())
         self.assertEqual(FakeVirtualCamera.instances, [])
+        self.assertEqual(FakePhoneReceiver.instances, [])
 
     def test_window_buttons_follow_the_platform(self) -> None:
         for macos in (False, True):
@@ -160,7 +205,7 @@ class MainWindowTests(unittest.TestCase):
                 )
 
     def test_usb_hint_points_mac_users_to_usb_debugging(self) -> None:
-        for macos, words in ((False, "«USB-модем» и нажмите"), (True, "«Отладку по USB»")):
+        for macos, words in ((False, "«USB-модемом»"), (True, "«Отладкой по USB»")):
             with self.subTest(macos=macos), mock.patch.object(ui, "MACOS", macos):
                 self.window.vpn_blocks_lan = False
                 self.window._refresh()
@@ -192,6 +237,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.camera_connected)
         self.assertFalse(self.window.preview.has_image())
         self.assertEqual(self.window.connect_button.text(), "Подключить камеру")
+        self.assertEqual(self.window.status_label.text(), "Камера не подключена")
 
     def test_stream_error_returns_to_the_disconnected_state(self) -> None:
         self.connect_phone()
@@ -279,8 +325,9 @@ class MainWindowTests(unittest.TestCase):
         window = self.window
         window._select_language("en")
 
-        self.assertEqual(window.connect_button.text(), "Connect camera")
-        self.assertEqual(window.status_label.text(), "Camera not connected")
+        self.assertEqual(window.connect_button.text(), "Don't connect")
+        self.assertEqual(window.status_label.text(), "Looking for the phone…")
+        self.assertEqual(window.device_select.currentText(), "No phones found")
         self.assertEqual(window.white_balance_select.itemText(1), "Incandescent")
         window.white_balance_select.setCurrentIndex(1)
         window.lens_seg.set_value("front")
@@ -317,6 +364,101 @@ class MainWindowTests(unittest.TestCase):
         window._reset_camera_controls()
         self.assertEqual(window.camera_command()["zoom"], 1.0)
         self.assertTrue(window.camera_command()["autofocus"])
+
+    def find(self, *phones: Phone) -> None:
+        self.window.phone_lists.put(list(phones))
+        self.window._poll_stream()
+
+    def test_lists_phones_and_connects_to_one_on_usb_by_itself(self) -> None:
+        wifi = Phone(id="p2", name="Pixel", link="wifi", address="10.0.0.3", version="0.6.0")
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        self.find(wifi, usb)
+
+        window = self.window
+        labels = [window.device_select.itemText(i) for i in range(window.device_select.count())]
+        self.assertEqual(labels, ["Pixel · Wi-Fi", "Redmi · USB"])
+        (receiver,) = FakePhoneReceiver.instances
+        self.assertIs(receiver.phone, usb)
+        self.assertTrue(receiver.started)
+        self.assertEqual(receiver.hello["id"], window.computer["id"])
+        self.assertEqual(receiver.hello["token"], "")
+        self.assertEqual(window.device_select.currentText(), "Redmi · USB")
+        self.assertEqual(window.status_label.text(), "Подключаемся: Redmi · USB…")
+
+    def test_an_unknown_wifi_phone_waits_to_be_picked(self) -> None:
+        wifi = Phone(id="p2", name="Pixel", link="wifi", address="10.0.0.3", version="0.6.0")
+        self.find(wifi)
+        self.assertEqual(FakePhoneReceiver.instances, [])
+
+        self.window.device_select.activated.emit(0)
+
+        (receiver,) = FakePhoneReceiver.instances
+        self.assertIs(receiver.phone, wifi)
+        self.assertEqual(self.window.settings.value("phone_id"), "p2")
+
+    def test_remembers_the_phone_its_token_and_its_zoom_range(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        self.find(usb)
+        receiver = FakePhoneReceiver.instances[0]
+        receiver.on_status("Разрешите подключение на экране телефона", False)
+        self.window._poll_stream()
+        self.assertEqual(self.window.status_label.text(), "Разрешите подключение на экране телефона")
+
+        receiver.on_accepted({
+            "status": "ok", "token": "t-1",
+            "camera": {"id": "p1", "lenses": {"Задняя": {"zoom": [0.5, 8]}, "Фронтальная": {"zoom": [1, 4]}}},
+        })
+        self.window._poll_stream()
+
+        window = self.window
+        self.assertEqual(window.settings.value("tokens/p1"), "t-1")
+        self.assertEqual(window.settings.value("phone_id"), "p1")
+        self.assertEqual((window.zoom_slider.minimum(), window.zoom_slider.maximum()), (5, 80))
+        low, high = window.scale_labels["zoom"]
+        self.assertEqual((low.text(), high.text()), ("0,5×", "8×"))
+        window.lens_seg.set_value("front")
+        window._lens_changed()
+        self.assertEqual((window.zoom_slider.minimum(), window.zoom_slider.maximum()), (10, 40))
+
+    def test_reconnects_after_a_drop_and_ignores_the_old_connection(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        self.find(usb)
+        first = FakePhoneReceiver.instances[0]
+        first.on_status("Передача H.264 прервана: сбой", True)
+        self.window._poll_stream()
+        self.assertTrue(first.stopped)
+        self.assertEqual(len(FakePhoneReceiver.instances), 1)  # waits RETRY_DELAY first
+
+        self.window.retry_at = 0.0
+        self.window._poll_stream()
+        self.assertEqual(len(FakePhoneReceiver.instances), 2)
+        first.on_status("Передача H.264 прервана: ещё раз", True)
+        self.window._poll_stream()
+        self.assertFalse(FakePhoneReceiver.instances[1].stopped)
+
+    def test_a_refusing_phone_is_left_alone_for_a_while(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        self.find(usb)
+        receiver = FakePhoneReceiver.instances[0]
+        receiver.on_refused(ui.PhoneRefused("Телефон уже передаёт видео на другой компьютер", "busy"))
+        receiver.on_status("Телефон уже передаёт видео на другой компьютер", True)
+        self.window._poll_stream()
+        self.window.retry_at = 0.0
+        self.window._poll_stream()
+
+        self.assertEqual(len(FakePhoneReceiver.instances), 1)
+        self.assertEqual(self.window.status_label.text(), "Телефон уже передаёт видео на другой компьютер")
+
+    def test_disconnecting_stops_connecting_by_itself(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        self.find(usb)
+        self.window._toggle_connection()
+        self.window._poll_stream()
+
+        self.assertTrue(FakePhoneReceiver.instances[0].stopped)
+        self.assertEqual(len(FakePhoneReceiver.instances), 1)
+        self.window._toggle_connection()
+        self.assertEqual(len(FakePhoneReceiver.instances), 2)
 
     def test_settings_survive_a_restart(self) -> None:
         self.window._select_language("en")
