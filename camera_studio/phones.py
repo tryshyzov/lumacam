@@ -97,6 +97,15 @@ def zoom_range(phone: Phone | None, lens: str) -> tuple[float, float]:
     return low, high
 
 
+def frame_rates(phone: Phone | None, lens: str) -> tuple[int, ...] | None:
+    """The steady frame rates the lens really gives, or None when the phone does not say."""
+    try:
+        rates = tuple(sorted({int(rate) for rate in phone.lenses[lens]["fps"]}))  # type: ignore[union-attr]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return rates or None
+
+
 def adb_phones(adb_devices_output: str) -> list[Phone]:
     """The ready phones in ``adb devices -l`` output."""
     phones = []

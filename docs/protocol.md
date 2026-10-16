@@ -216,7 +216,7 @@ LUMALINK-CAMERA-2 <json>
   "name": "Redmi Note 9 Pro",
   "link": "usb",
   "version": "0.6.0",
-  "lenses": {"Задняя": {"zoom": [0.5, 10.0]}, "Фронтальная": {"zoom": [1.0, 4.0]}}
+  "lenses": {"Задняя": {"zoom": [0.5, 10.0], "fps": [30, 60]}, "Фронтальная": {"zoom": [1.0, 4.0], "fps": [30]}}
 }
 ```
 
@@ -226,7 +226,7 @@ LUMALINK-CAMERA-2 <json>
 | `name` | What to show in the device list: the device name the user set, or the model |
 | `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (the phone's Wi-Fi network) |
 | `version` | The phone app's version |
-| `lenses` | For each lens token of the camera settings, the zoom range the phone offers |
+| `lenses` | For each lens token of the camera settings, the zoom range the phone offers (`zoom`) and the frame rates it can really deliver (`fps`, see below) |
 
 `zoom` is `[minimum, maximum]` as a ratio to the main camera. A minimum below
 1 means a wider view than the main camera, from an ultra-wide module, and
@@ -246,6 +246,12 @@ takes over at a requested zoom of 0.95 and below, and hands back at 1.05
 and above (likewise around a telephoto's ratio). A switch rebinds the
 camera and starts a new encoder, so the next frame is a key frame and the
 size may change (see "The picture size can change mid-stream").
+
+`fps` lists the steady frame rates among 30 and 60 the lens really delivers,
+for example `[30]` or `[30, 60]`; Studio offers 60 fps only when it is
+listed, and without the key it offers both, as before. Many phones film 60
+fps in their own camera app but give other apps 30 at most: they list
+`[30]`.
 
 The phone answers `LUMALINK-DISCOVER-1` as before, only from its tethering
 network, with `LUMALINK-CAMERA-1`.

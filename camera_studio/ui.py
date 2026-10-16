@@ -39,7 +39,7 @@ from camera_studio.pause_frame import (
     paused_frame,
     transition_frame,
 )
-from camera_studio.phones import LINKS, Phone, PhoneFinder, zoom_range
+from camera_studio.phones import LINKS, Phone, PhoneFinder, frame_rates, zoom_range
 from camera_studio.stream import (
     H264Decoder,
     H264FrameReceiver,
@@ -238,6 +238,8 @@ class MainWindow(QWidget):
         self.profile_index = DEFAULT_PROFILE
         self._texts: list[tuple[Callable[[str], None], str, bool]] = []
         self.scale_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        # The frame rates the connected phone's lens gives, None when unknown.
+        self.lens_frame_rates: tuple[int, ...] | None = None
         self._ready = False
         # Updates: results from the checking and downloading threads.
         self.update_messages: queue.Queue[tuple] = queue.Queue()
@@ -750,6 +752,8 @@ class MainWindow(QWidget):
         self.profile_button.set_texts(self.t("profile"), resolution, f"{fps}fps")
         for index, action in enumerate(self.profile_actions):
             action.setIcon(self._check_icon if index == self.profile_index else self._blank_icon)
+            rates = self.lens_frame_rates
+            action.setEnabled(rates is None or PROFILES[index][1] in rates)
         self._refresh_window_buttons()
 
         if self.error_text:
@@ -876,14 +880,26 @@ class MainWindow(QWidget):
         self._apply_zoom_range()
         self._camera_control_changed()
 
-    def _apply_zoom_range(self) -> None:
-        """Let the zoom go as wide and as far as the phone's lens does."""
-        source = None
+    def _lens_source(self) -> Phone | None:
+        """What is known about the phone's lenses: from its handshake, else from discovery."""
         if self.camera_info is not None:
-            source = Phone(id="", name="", link="usb", lenses=self.camera_info.get("lenses") or {})
-        elif self.phone is not None:
-            source = self.phone
-        low, high = zoom_range(source, PHONE_LENS[self.lens_seg.value()])
+            return Phone(id="", name="", link="usb", lenses=self.camera_info.get("lenses") or {})
+        return self.phone
+
+    def _apply_zoom_range(self) -> None:
+        """Let the zoom go as wide and as far as the phone's lens does,
+        and offer only the frame rates it really gives."""
+        source = self._lens_source()
+        lens = PHONE_LENS[self.lens_seg.value()]
+        self.lens_frame_rates = frame_rates(source, lens)
+        resolution, fps, _size = PROFILES[self.profile_index]
+        if self.lens_frame_rates is not None and fps not in self.lens_frame_rates:
+            # The same resolution at the best rate the lens has.
+            usable = [i for i, (r, f, _) in enumerate(PROFILES) if r == resolution and f in self.lens_frame_rates]
+            if usable:
+                self.profile_index = max(usable, key=lambda i: PROFILES[i][1])
+                self._schedule_camera_control_update()
+        low, high = zoom_range(source, lens)
         self.zoom_slider.setRange(round(low * 10), round(high * 10))
         low_label, high_label = self.scale_labels["zoom"]
         low_label.setText(f"{format_number(self.language, low, 1 if low % 1 else 0)}×")

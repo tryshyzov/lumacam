@@ -420,6 +420,26 @@ class MainWindowTests(unittest.TestCase):
         window._lens_changed()
         self.assertEqual((window.zoom_slider.minimum(), window.zoom_slider.maximum()), (10, 40))
 
+    def test_offers_60_fps_only_where_the_phone_gives_it(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
+        window = self.window
+        window._select_profile(4)  # 1080p, 60 fps
+        self.find(usb)
+        FakePhoneReceiver.instances[0].on_accepted({
+            "status": "ok",
+            "camera": {"id": "p1", "lenses": {"Задняя": {"zoom": [1, 10], "fps": [30]},
+                                              "Фронтальная": {"zoom": [1, 4], "fps": [30, 60]}}},
+        })
+        window._poll_stream()
+
+        self.assertEqual(ui.PROFILES[window.profile_index][:2], ("1080p", 30))
+        self.assertFalse(window.profile_actions[4].isEnabled())
+        self.assertTrue(window.profile_actions[3].isEnabled())
+        window.lens_seg.set_value("front")
+        window._lens_changed()
+        window._refresh()
+        self.assertTrue(window.profile_actions[4].isEnabled())
+
     def test_reconnects_after_a_drop_and_ignores_the_old_connection(self) -> None:
         usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
         self.find(usb)
