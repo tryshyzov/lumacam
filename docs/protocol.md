@@ -224,7 +224,7 @@ LUMALINK-CAMERA-2 <json>
 | --- | --- |
 | `id` | A random UUID the phone keeps, to recognise it on any link |
 | `name` | What to show in the device list: the device name the user set, or the model |
-| `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (anything else) |
+| `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (the phone's Wi-Fi network) |
 | `version` | The phone app's version |
 | `lenses` | For each lens token of the camera settings, the zoom range the phone offers |
 
@@ -330,9 +330,9 @@ It does not connect to it, which would bypass allowing the computer.
 
 | Port | Protocol | Listener | Purpose |
 | --- | --- | --- | --- |
-| 8765 | TCP | phone (USB), Studio (Wi-Fi) | Frame stream |
-| 8766 | UDP | phone | USB discovery; in version 2, discovery on every link |
-| 8767 | UDP | Studio | Wi-Fi discovery |
+| 8765 | TCP | phone: USB in version 1; USB and Wi-Fi in version 2. Studio: Wi-Fi in version 1 only | Frame stream |
+| 8766 | UDP | phone: USB tethering in version 1; Wi-Fi, tethering and loopback in version 2 | Discovery of phones |
+| 8767 | UDP | Studio, version 1 only | Wi-Fi discovery of Studio; a version 2 phone also probes it, to tell its user an old Studio needs updating |
 
 ## Changing the protocol
 
