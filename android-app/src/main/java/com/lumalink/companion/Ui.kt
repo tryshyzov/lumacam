@@ -18,15 +18,20 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** The palette of the desktop app (measured from the prototype). */
+/**
+ * The logo's palette, as in the desktop app (assets/logo/README.md): graphite
+ * surfaces, light text like the aperture's blades, and its opening's colour
+ * as the one accent, for what is on.
+ */
 internal object Palette {
-    val CHROME = Color.rgb(0x62, 0x62, 0x62)
-    val FRAME = Color.rgb(0x3d, 0x3d, 0x3d)
-    val SHEET = Color.rgb(0x3d, 0x3d, 0x3d)
-    val TEXT = Color.WHITE
-    val TEXT_SECONDARY = Color.rgb(0xe0, 0xe0, 0xe0)
-    val TEXT_ON_SOLID = Color.rgb(0x2b, 0x2b, 0x2b)
-    val BORDER_CONTROL = Color.rgb(0xb8, 0xb8, 0xb8)
+    val CHROME = Color.rgb(0x23, 0x23, 0x23)
+    val FRAME = Color.rgb(0x18, 0x18, 0x18)
+    val SHEET = Color.rgb(0x2d, 0x2d, 0x2d)
+    val TEXT = Color.rgb(0xf4, 0xf4, 0xf2)
+    val TEXT_SECONDARY = Color.rgb(0xa9, 0xa9, 0xa5)
+    val TEXT_ON_SOLID = Color.rgb(0x1b, 0x1b, 0x1b)
+    val BORDER_CONTROL = Color.rgb(0x6b, 0x6b, 0x68)
+    val ACCENT = Color.rgb(0xff, 0x5a, 0x3c)
     val SCRIM = Color.argb(128, 0, 0, 0)
     val TAG = Color.argb(128, 0, 0, 0)
     val PRESS_ON_DARK = Color.argb(36, 255, 255, 255)
@@ -156,11 +161,11 @@ internal class ToggleView(context: Context) : View(context) {
         rect.set(stroke / 2, stroke / 2, width - stroke / 2, height - stroke / 2)
         val radius = rect.height() / 2
         paint.style = Paint.Style.FILL
-        paint.color = if (isOn) Palette.TEXT else Color.TRANSPARENT
+        paint.color = if (isOn) Palette.ACCENT else Color.TRANSPARENT
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = stroke
-        paint.color = if (isOn) Palette.TEXT else Palette.BORDER_CONTROL
+        paint.color = if (isOn) Palette.ACCENT else Palette.BORDER_CONTROL
         canvas.drawRoundRect(rect, radius, radius, paint)
         paint.style = Paint.Style.FILL
         paint.color = if (isOn) Palette.TEXT_ON_SOLID else Palette.BORDER_CONTROL
