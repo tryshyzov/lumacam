@@ -10,9 +10,9 @@
 AppId={{DB5182A6-0543-46A4-A018-B63504273211}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion} (prototype)
+AppVerName={#AppName} {#AppVersion}
 AppPublisher=LumaLink
-AppComments=Windows desktop prototype for an Android phone camera
+AppComments=An Android phone's camera as a webcam
 SetupIconFile=..\assets\LumaLinkStudio.ico
 DefaultDirName={autopf}\LumaLink Studio
 DefaultGroupName=LumaLink Studio

@@ -7,7 +7,7 @@
 
 <p align="center"><a href="https://tryshyzov.github.io/lumacam/">Website and downloads</a></p>
 
-Windows desktop prototype for using an Android phone as a camera. The iOS companion and production installer are not implemented yet. (Pure vibecoding.) 
+LumaLink Studio turns an Android phone into a webcam for Windows and macOS. An iOS app is not available yet. (Pure vibecoding.) 
 
 ## Run the desktop app
 
@@ -108,7 +108,7 @@ Android companion (Kotlin / Camera2, CameraX) ─── session + video/control 
                                                                     │
 Planned iOS companion (Swift / AVFoundation) ──────────────────────┘
                                                                    ▼
-                                              Windows desktop app (Python prototype)
+                                              Windows desktop app (Python)
                                                 ├─ preview and settings UI
                                                 ├─ USB / Wi-Fi transport adapters
                                                 └─ LumaLink Camera (DirectShow)
@@ -120,19 +120,19 @@ LumaLink Camera is installed by the LumaLink Studio installer; no kernel driver 
 
 ### Desktop (Windows first)
 
-- The current prototype keeps the desktop UI, connection, decoding, and frame delivery in one Python application; a separate native session service is future work.
+- The desktop app keeps its UI, connection, decoding, and frame delivery in one Python application; a separate native session service is future work.
 - Send frames to LumaLink Camera. When it is not installed (running from source or from the standalone executable), fall back to the `pyvirtualcam` OBS backend and then Unity Capture. Never fall back to a physical camera.
 - LumaLink does not install, register, update, or remove third-party camera devices.
 
 ### Mobile companions
 
-- Android: implemented in Kotlin with CameraX/Camera2 controls. Device capabilities vary; this prototype does not yet report a complete capability map to the desktop UI.
+- Android: implemented in Kotlin with CameraX/Camera2 controls. Device capabilities vary; the app does not yet report a complete capability map to the desktop UI.
 - iOS: not implemented. A future Swift/AVFoundation companion must query each device/format's supported focus, exposure, white balance, lens, zoom, and frame-rate ranges before displaying controls.
 - Both clients negotiate only capabilities actually supported by the selected camera. Unsupported controls remain unavailable rather than reporting false success.
 
 ### Transport
 
-- The current prototype sends H.264 video without authentication or encryption over the local network for Wi-Fi. For USB, the desktop discovers the phone on the USB-tethering network and connects to its TCP listener; both transports use length-prefixed H.264 access units, per-frame acknowledgements, and a control channel. The phone accepts USB-mode clients only from the subnet of its tethering interface (`rndis*`, `usb*`, `ncm*`) or from loopback (the `adb forward` fallback), but that link is still unauthenticated and unencrypted.
+- LumaLink sends H.264 video without authentication or encryption over the local network for Wi-Fi. For USB, the desktop discovers the phone on the USB-tethering network and connects to its TCP listener; both transports use length-prefixed H.264 access units, per-frame acknowledgements, and a control channel. The phone accepts USB-mode clients only from the subnet of its tethering interface (`rndis*`, `usb*`, `ncm*`) or from loopback (the `adb forward` fallback), but that link is still unauthenticated and unencrypted.
 - LumaLink Camera is a DirectShow filter derived from Unity Capture. OBS Virtual Camera and Unity Capture are only fallbacks for running without the installer.
 - A production transport can use an authenticated WebRTC session for video and control messages. Keep transport selection separate from encoding and the camera-control protocol.
 - Validate latency, reconnect behavior, and network permissions independently on Android and iOS. Do not assume USB camera mode or USB tethering is available on every phone/OS combination.
