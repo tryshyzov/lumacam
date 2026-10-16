@@ -224,9 +224,24 @@ def install_windows(installer: Path, shell_execute: Callable[..., int] | None = 
         ]
         function.restype = ctypes.c_void_p
         shell_execute = function
+    _reset_bundle_environment()
     result = shell_execute(None, "runas", str(installer), SETUP_ARGUMENTS, None, _SW_SHOWNORMAL)
     # Values up to 32 are errors, among them a declined administrator prompt.
     return (result or 0) > 32
+
+
+def _reset_bundle_environment() -> None:
+    """Keep the packaged app's own variables away from what Setup starts.
+
+    Setup, and the new version it starts, inherit this process's
+    environment. The PyInstaller bootloader marks it with variables of its
+    own; the new version's bootloader then takes itself for a child of this
+    one and looks for this process's unpacked files, gone once it has quit
+    ("Failed to load Python DLL").
+    """
+    for name in [name for name in os.environ if name.upper().startswith(("_PYI_", "_MEIPASS"))]:
+        del os.environ[name]
+    os.environ["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
 
 
 def hold_app_mutex() -> None:
