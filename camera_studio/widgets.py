@@ -42,17 +42,21 @@ from PySide6.QtWidgets import (
 
 from camera_studio.pause_frame import PAUSE_IN_SECONDS, PAUSE_OUT_SECONDS
 
-# Palette measured from the prototype; see the mockup's review table.
-CHROME = "#626262"
-FRAME = "#3d3d3d"
+# The logo's palette (assets/logo/README.md): graphite surfaces, light text
+# like the aperture's blades, and its opening's colour as the one accent,
+# kept for what is on or primary.
+CHROME = "#232323"
+FRAME = "#181818"
 LETTERBOX = "#000000"
-TEXT = "#ffffff"
-TEXT_SECONDARY = "#e0e0e0"
-TEXT_ON_SOLID = "#2b2b2b"
-BORDER_SUBTLE = "#757575"
-BORDER_CONTROL = "#b8b8b8"
-MENU = "#3d3d3d"
-MENU_HOVER = "#575757"
+TEXT = "#f4f4f2"
+TEXT_SECONDARY = "#a9a9a5"
+TEXT_ON_SOLID = "#1b1b1b"
+BORDER_SUBTLE = "#383838"
+BORDER_CONTROL = "#6b6b68"
+MENU = "#2d2d2d"
+MENU_HOVER = "#3b3b3b"
+ACCENT = "#ff5a3c"
+ACCENT_HOVER = "#ff7559"
 # macOS draws its own window buttons; Windows gets the prototype's ones.
 MACOS = sys.platform == "darwin"
 FONT_FAMILY = ".AppleSystemUIFont" if MACOS else "Segoe UI"
@@ -176,8 +180,8 @@ class Switch(QAbstractButton):
         margin = self._MARGIN
         amount = self._position
         track = QRectF(margin + 0.5, margin + 0.5, 35, 19)
-        outline = _mix(QColor(BORDER_CONTROL), QColor(TEXT), amount)
-        fill = QColor(TEXT)
+        outline = _mix(QColor(BORDER_CONTROL), QColor(ACCENT), amount)
+        fill = QColor(ACCENT)
         fill.setAlphaF(amount)
         painter.setPen(QPen(outline, 1))
         painter.setBrush(fill)
@@ -550,9 +554,9 @@ QToolButton:hover, QToolButton:checked {{ background: rgba(255, 255, 255, 0.08);
 QToolButton:focus {{ border: 1px solid {TEXT}; }}
 QToolButton[role="window"] {{ border-radius: 0; }}
 
-QPushButton#action {{ min-height: 34px; padding: 0 16px; border: 1px solid {TEXT}; border-radius: 6px;
-    background: {TEXT}; color: {TEXT_ON_SOLID}; font-weight: 600; }}
-QPushButton#action:hover {{ background: {TEXT_SECONDARY}; }}
+QPushButton#action {{ min-height: 34px; padding: 0 16px; border: 1px solid {ACCENT}; border-radius: 6px;
+    background: {ACCENT}; color: {TEXT_ON_SOLID}; font-weight: 600; }}
+QPushButton#action:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QPushButton#action[quiet="true"] {{ background: transparent; color: {TEXT}; border: 1px solid {BORDER_CONTROL}; }}
 QPushButton#action[quiet="true"]:hover {{ background: rgba(255, 255, 255, 0.08); }}
 QPushButton#action:focus {{ border: 2px solid {TEXT}; }}
@@ -579,14 +583,14 @@ QComboBox QAbstractItemView {{ background: {MENU}; border: 1px solid {MENU_HOVER
     selection-background-color: {MENU_HOVER}; selection-color: {TEXT}; }}
 
 QSlider::groove:horizontal {{ height: 2px; border-radius: 1px; background: {BORDER_CONTROL}; }}
-QSlider::sub-page:horizontal {{ height: 2px; border-radius: 1px; background: {TEXT}; }}
+QSlider::sub-page:horizontal {{ height: 2px; border-radius: 1px; background: {ACCENT}; }}
 QSlider::handle:horizontal {{ width: 16px; height: 16px; margin: -7px 0; border-radius: 8px; background: {TEXT}; }}
 QSlider::groove:horizontal:disabled, QSlider::sub-page:horizontal:disabled {{ background: rgba(184, 184, 184, 0.4); }}
 QSlider::handle:horizontal:disabled {{ background: #9a9a9a; }}
 
 QScrollArea {{ border: none; background: transparent; }}
 QScrollBar:vertical {{ width: 8px; margin: 2px; background: transparent; }}
-QScrollBar::handle:vertical {{ min-height: 28px; border-radius: 2px; background: #8a8a8a; }}
+QScrollBar::handle:vertical {{ min-height: 28px; border-radius: 2px; background: {BORDER_CONTROL}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 
