@@ -28,6 +28,9 @@ internal sealed class UpdateState {
     data class Available(val release: AppRelease) : UpdateState()
     data class Downloading(val release: AppRelease, val percent: Int) : UpdateState()
     data class Installing(val release: AppRelease) : UpdateState()
+
+    /** Downloaded, waiting for the user to let this app install updates. */
+    data class NeedsPermission(val release: AppRelease) : UpdateState()
     data class Failed(val release: AppRelease?, val reason: String?) : UpdateState()
 }
 
@@ -79,13 +82,21 @@ internal class AppUpdater(
         }
     }
 
-    /** Download [release] and ask the system to install it. */
+    /**
+     * Download [release] and ask the system to install it. Asks for the
+     * permission to install first: the system's own prompt sends the user to
+     * Settings and drops the install on the way, so the download would be lost.
+     */
     fun install(release: AppRelease) {
         state = UpdateState.Downloading(release, 0)
         onChange(state)
         worker.execute {
             try {
-                val apk = download(release)
+                val apk = downloaded(release) ?: download(release)
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    report(UpdateState.NeedsPermission(release))
+                    return@execute
+                }
                 report(UpdateState.Installing(release))
                 commit(apk)
             } catch (error: Exception) {
@@ -112,10 +123,18 @@ internal class AppUpdater(
         }
     }
 
+    private fun apkFile(release: AppRelease): File =
+        File(File(context.cacheDir, "updates"), "LumaLinkCompanion-${release.version}.apk")
+
+    /** [release]'s APK if an earlier attempt downloaded all of it. */
+    private fun downloaded(release: AppRelease): File? =
+        apkFile(release).takeIf { it.isFile && (release.size <= 0 || it.length() == release.size) }
+
     private fun download(release: AppRelease): File {
-        val folder = File(context.cacheDir, "updates").apply { mkdirs() }
+        val apk = apkFile(release)
+        val folder = apk.parentFile!!.apply { mkdirs() }
         folder.listFiles()?.forEach { it.delete() }
-        val apk = File(folder, "LumaLinkCompanion-${release.version}.apk")
+        val partial = File(folder, apk.name + ".part")
         val connection = open(release.apkUrl)
         try {
             check(connection.responseCode == HttpURLConnection.HTTP_OK) { "HTTP ${connection.responseCode}" }
@@ -123,7 +142,7 @@ internal class AppUpdater(
             var copied = 0L
             var shown = 0
             connection.inputStream.use { input ->
-                apk.outputStream().use { output ->
+                partial.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val read = input.read(buffer)
@@ -139,6 +158,7 @@ internal class AppUpdater(
                 }
             }
             check(release.size <= 0 || copied == release.size) { "download incomplete" }
+            check(partial.renameTo(apk)) { "could not keep the download" }
         } finally {
             connection.disconnect()
         }
