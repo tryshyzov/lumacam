@@ -97,10 +97,12 @@ def zoom_range(phone: Phone | None, lens: str) -> tuple[float, float]:
     return low, high
 
 
-def frame_rates(phone: Phone | None, lens: str) -> tuple[int, ...] | None:
-    """The steady frame rates the lens really gives, or None when the phone does not say."""
+def frame_rates(phone: Phone | None, lens: str, resolution: str) -> tuple[int, ...] | None:
+    """The steady frame rates the lens really gives at ``resolution``, or None
+    when the phone does not say."""
     try:
-        rates = tuple(sorted({int(rate) for rate in phone.lenses[lens]["fps"]}))  # type: ignore[union-attr]
+        listed = phone.lenses[lens]["fps"][resolution]  # type: ignore[union-attr]
+        rates = tuple(sorted({int(rate) for rate in listed}))
     except (AttributeError, KeyError, TypeError, ValueError):
         return None
     return rates or None

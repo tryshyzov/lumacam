@@ -216,7 +216,10 @@ LUMALINK-CAMERA-2 <json>
   "name": "Redmi Note 9 Pro",
   "link": "usb",
   "version": "0.6.0",
-  "lenses": {"Задняя": {"zoom": [0.5, 10.0], "fps": [30, 60]}, "Фронтальная": {"zoom": [1.0, 4.0], "fps": [30]}}
+  "lenses": {
+    "Задняя": {"zoom": [0.5, 10.0], "fps": {"480p": [30, 60], "720p": [30, 60], "1080p": [30]}},
+    "Фронтальная": {"zoom": [1.0, 4.0], "fps": {"480p": [30], "720p": [30], "1080p": [30]}}
+  }
 }
 ```
 
@@ -247,11 +250,12 @@ and above (likewise around a telephoto's ratio). A switch rebinds the
 camera and starts a new encoder, so the next frame is a key frame and the
 size may change (see "The picture size can change mid-stream").
 
-`fps` lists the steady frame rates among 30 and 60 the lens really delivers,
-for example `[30]` or `[30, 60]`; Studio offers 60 fps only when it is
-listed, and without the key it offers both, as before. Many phones film 60
-fps in their own camera app but give other apps 30 at most: they list
-`[30]`.
+`fps` maps each resolution token of the camera settings to the steady frame
+rates among 30 and 60 the lens really delivers at that size, for example
+`{"480p": [30], "720p": [30, 60], "1080p": [30]}`. Studio offers 60 fps
+only where it is listed, and without the key it offers both, as before.
+Many phones film 60 fps in their own camera app but give other apps 30 at
+most: they list `[30]` everywhere.
 
 The phone answers `LUMALINK-DISCOVER-1` as before, only from its tethering
 network, with `LUMALINK-CAMERA-1`.

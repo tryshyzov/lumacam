@@ -427,18 +427,22 @@ class MainWindowTests(unittest.TestCase):
         self.find(usb)
         FakePhoneReceiver.instances[0].on_accepted({
             "status": "ok",
-            "camera": {"id": "p1", "lenses": {"Задняя": {"zoom": [1, 10], "fps": [30]},
-                                              "Фронтальная": {"zoom": [1, 4], "fps": [30, 60]}}},
+            "camera": {"id": "p1", "lenses": {
+                "Задняя": {"zoom": [1, 10], "fps": {"720p": [30, 60], "1080p": [30]}},
+                "Фронтальная": {"zoom": [1, 4], "fps": {"720p": [30], "1080p": [30, 60]}},
+            }},
         })
         window._poll_stream()
 
         self.assertEqual(ui.PROFILES[window.profile_index][:2], ("1080p", 30))
-        self.assertFalse(window.profile_actions[4].isEnabled())
-        self.assertTrue(window.profile_actions[3].isEnabled())
+        enabled = [action.isEnabled() for action in window.profile_actions]
+        # 480p is not listed: unknown, so offered; 720p has 60, 1080p not.
+        self.assertEqual(enabled, [True, True, True, True, False])
         window.lens_seg.set_value("front")
         window._lens_changed()
         window._refresh()
-        self.assertTrue(window.profile_actions[4].isEnabled())
+        enabled = [action.isEnabled() for action in window.profile_actions]
+        self.assertEqual(enabled, [True, True, False, True, True])
 
     def test_reconnects_after_a_drop_and_ignores_the_old_connection(self) -> None:
         usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")

@@ -239,7 +239,7 @@ class MainWindow(QWidget):
         self._texts: list[tuple[Callable[[str], None], str, bool]] = []
         self.scale_labels: dict[str, tuple[QLabel, QLabel]] = {}
         # The frame rates the connected phone's lens gives, None when unknown.
-        self.lens_frame_rates: tuple[int, ...] | None = None
+        self.lens_frame_rates: dict[str, tuple[int, ...] | None] = {}
         self._ready = False
         # Updates: results from the checking and downloading threads.
         self.update_messages: queue.Queue[tuple] = queue.Queue()
@@ -752,8 +752,7 @@ class MainWindow(QWidget):
         self.profile_button.set_texts(self.t("profile"), resolution, f"{fps}fps")
         for index, action in enumerate(self.profile_actions):
             action.setIcon(self._check_icon if index == self.profile_index else self._blank_icon)
-            rates = self.lens_frame_rates
-            action.setEnabled(rates is None or PROFILES[index][1] in rates)
+            action.setEnabled(self._profile_usable(index))
         self._refresh_window_buttons()
 
         if self.error_text:
@@ -886,16 +885,24 @@ class MainWindow(QWidget):
             return Phone(id="", name="", link="usb", lenses=self.camera_info.get("lenses") or {})
         return self.phone
 
+    def _profile_usable(self, index: int) -> bool:
+        resolution, fps, _size = PROFILES[index]
+        rates = self.lens_frame_rates.get(resolution)
+        return rates is None or fps in rates
+
     def _apply_zoom_range(self) -> None:
         """Let the zoom go as wide and as far as the phone's lens does,
         and offer only the frame rates it really gives."""
         source = self._lens_source()
         lens = PHONE_LENS[self.lens_seg.value()]
-        self.lens_frame_rates = frame_rates(source, lens)
+        self.lens_frame_rates = {
+            resolution: frame_rates(source, lens, resolution)
+            for resolution in dict.fromkeys(r for r, _, _ in PROFILES)
+        }
         resolution, fps, _size = PROFILES[self.profile_index]
-        if self.lens_frame_rates is not None and fps not in self.lens_frame_rates:
-            # The same resolution at the best rate the lens has.
-            usable = [i for i, (r, f, _) in enumerate(PROFILES) if r == resolution and f in self.lens_frame_rates]
+        if not self._profile_usable(self.profile_index):
+            # The same resolution at the best rate the lens has there.
+            usable = [i for i, (r, _, _) in enumerate(PROFILES) if r == resolution and self._profile_usable(i)]
             if usable:
                 self.profile_index = max(usable, key=lambda i: PROFILES[i][1])
                 self._schedule_camera_control_update()
