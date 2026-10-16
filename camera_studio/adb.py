@@ -32,8 +32,9 @@ class AdbForward:
             pass
 
 
-def open_adb_forward(device_port: int) -> AdbForward:
-    """Forward a free loopback port to ``device_port`` on the connected phone."""
+def open_adb_forward(device_port: int, serial: str | None = None) -> AdbForward:
+    """Forward a free loopback port to ``device_port`` on the phone ``serial``,
+    or on the first ready one."""
     adb = find_adb()
     if adb is None:
         raise ConnectionError("ADB не найден")
@@ -43,7 +44,11 @@ def open_adb_forward(device_port: int) -> AdbForward:
         for line in result.stdout.splitlines()[1:]
         if len(line.split()) >= 2
     )
-    serial = next((name for name, state in states.items() if state == "device"), None)
+    if serial is not None:
+        if states.get(serial) != "device":
+            raise ConnectionError("телефон отключён от USB или не разрешил отладку по USB")
+    else:
+        serial = next((name for name, state in states.items() if state == "device"), None)
     if serial is None:
         if "unauthorized" in states.values():
             raise ConnectionError(
