@@ -7,6 +7,7 @@ internal object Strings {
 
     private val ru = mapOf(
         "waiting" to "Ждём компьютер",
+        "lensRate" to "%s · %d кадров/с",
         "liveTo" to "%s подключён по %s",
         "computer" to "Компьютер",
         "linkUsb" to "USB",
@@ -61,6 +62,7 @@ internal object Strings {
 
     private val en = mapOf(
         "waiting" to "Waiting for a computer",
+        "lensRate" to "%s · %d fps",
         "liveTo" to "%s connected over %s",
         "computer" to "Computer",
         "linkUsb" to "USB",
