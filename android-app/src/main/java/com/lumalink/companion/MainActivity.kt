@@ -637,6 +637,8 @@ class MainActivity : ComponentActivity() {
             else -> R.drawable.ic_status_wait to t("waiting")
         }
         statusIcon.setImageResource(icon)
+        // Connected shows in the logo's accent; every other state in the text colour.
+        statusIcon.setColorFilter(if (computer != null && problem == null && cameraReady) Palette.ACCENT else Palette.TEXT)
         statusText.text = status
 
         val oldStudio = SystemClock.elapsedRealtime() - oldStudioSeenAt < OLD_STUDIO_HINT_MS && oldStudioSeenAt > 0
