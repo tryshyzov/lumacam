@@ -723,16 +723,23 @@ class H264FrameReceiver:
         self._pump(_SocketReader(connection), connection)
 
     def _pump(self, stream: BinaryIO | _SocketReader, connection: socket.socket) -> None:
-        """Receive frames and answer each, with a settings change if one waits."""
+        """Receive frames and answer each, with a settings change if one waits.
+
+        The answer goes out before the frame is decoded, so the phone sends
+        the next one while this one is decoded and drawn: at 60 fps a frame
+        has 16.6 ms, which the round trip plus decoding a 1080p frame and
+        making its picture did not always leave. Still only one frame is on
+        its way at a time, so the latency stays bounded.
+        """
         while not self._stop.is_set():
             packet = read_video_packet(stream)
-            self._on_frame(packet)
             with self._send_lock:
                 pending = bytearray(USB_FRAME_ACK)
                 command = self._pending_controls.pop() if self._pending_controls else b""
                 pending.extend(struct.pack("!I", len(command)))
                 pending.extend(command)
                 connection.sendall(pending)
+            self._on_frame(packet)
 
 
 class H264Decoder:
