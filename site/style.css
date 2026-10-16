@@ -1,4 +1,4 @@
-/* The app's palette: grays from the window, the red of the logo's record light. */
+/* The app's palette: grays from the window, the logo's accent (assets/logo). */
 :root {
   --bg: #1c1c1c;
   --surface: #262626;
@@ -6,7 +6,7 @@
   --border: #3d3d3d;
   --text: #ffffff;
   --muted: #b8b8b8;
-  --record: #ff3b30;
+  --accent: #ff5a3c;
   --radius: 14px;
   --wrap: 1120px;
   color-scheme: dark;
@@ -118,8 +118,8 @@ img { max-width: 100%; height: auto; display: block; }
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--record);
-  box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.2);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 90, 60, 0.2);
   animation: rec 2s ease-in-out infinite;
 }
 

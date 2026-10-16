@@ -3,7 +3,7 @@
 # Для пользователей из России и Украины, перевод можно найти в [другом руководстве](README-ru.md).
 
 
-<p align="center"><img src="assets/LumaCam.png" alt="LumaLink Studio logo" width="240"></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/logo/logo-wordmark-dark.png"><img src="assets/logo/logo-wordmark-light.png" alt="LumaLink" width="360"></picture></p>
 
 <p align="center"><a href="https://tryshyzov.github.io/lumacam/">Website and downloads</a></p>
 
