@@ -26,6 +26,10 @@ from camera_studio.adb import AdbForward, open_adb_forward
 HWACCEL_VARIABLE = "LUMALINK_HWACCEL"
 HWACCEL_DEVICES = {"darwin": ("videotoolbox",), "win32": ("d3d11va", "dxva2")}
 USB_PROTOCOL_MAGIC = b"LUMAAVC1"
+PROTOCOL_MAGIC_V2 = b"LUMAAVC2"
+MAX_STATUS_SIZE = 16_384
+# The phone asks its user to allow a new computer and answers within 60 s.
+ALLOW_TIMEOUT = 70
 USB_FRAME_ACK = b"\x06"
 USB_DISCOVERY_PORT = 8766
 USB_DISCOVERY_REQUEST = b"LUMALINK-DISCOVER-1"
@@ -484,7 +488,39 @@ class CameraStreamServer:
                 pass
 
 
+class PhoneRefused(ConnectionError):
+    """The phone said no (version 2): not allowed, or streaming elsewhere."""
+
+    def __init__(self, message: str, status: str, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+
+
+def read_status(connection: socket.socket) -> dict:
+    """One version 2 status message: a length and a JSON object."""
+    reader = _SocketReader(connection)
+    header = _read_exactly(reader, 4, "Ответ телефона получен не полностью")
+    length = struct.unpack("!I", header)[0]
+    if length <= 0 or length > MAX_STATUS_SIZE:
+        raise ValueError("Недопустимый размер ответа телефона")
+    body = _read_exactly(reader, length, "Ответ телефона получен не полностью")
+    status = json.loads(body.decode("utf-8"))
+    if not isinstance(status, dict):
+        raise ValueError("Телефон ответил непонятно")
+    return status
+
+
 class H264FrameReceiver:
+    """Receives the frame stream from a phone it connects to.
+
+    With ``phone`` (a phones.Phone) it connects to that phone on its link and
+    shakes hands in the phone's protocol version, sending ``hello`` (the
+    computer's id, name and token) to a version 2 phone and passing its
+    ``"ok"`` answer to ``on_accepted``. Without it, the version 1 ways: to
+    ``host``, or with ``usb`` to the phone found over USB tethering or ADB.
+    """
+
     def __init__(
         self,
         host: str | None,
@@ -493,7 +529,15 @@ class H264FrameReceiver:
         on_status: Callable[[str, bool], None],
         usb: bool,
         adb_fallback: bool = True,
+        phone: object | None = None,
+        hello: dict | None = None,
+        on_accepted: Callable[[dict], None] | None = None,
+        on_refused: Callable[[PhoneRefused], None] | None = None,
     ) -> None:
+        self._phone = phone
+        self._hello = hello or {}
+        self._on_accepted = on_accepted or (lambda _status: None)
+        self._on_refused = on_refused or (lambda _error: None)
         self._host = host
         self._port = port
         self._on_frame = on_frame
@@ -541,6 +585,41 @@ class H264FrameReceiver:
             self._adb_forward = forward
             return socket.create_connection(("127.0.0.1", forward.port), timeout=5)
 
+    def _connect_to_phone(self) -> socket.socket:
+        phone = self._phone
+        if phone.link == "adb":
+            self._on_status("Подключаемся к телефону через ADB…", False)
+            forward = open_adb_forward(self._port, phone.serial)
+            self._adb_forward = forward
+            return socket.create_connection(("127.0.0.1", forward.port), timeout=5)
+        return socket.create_connection((phone.address, self._port), timeout=5)
+
+    def _shake_hands_v2(self, connection: socket.socket) -> None:
+        """Say who this computer is and wait for the phone to let it in."""
+        hello = json.dumps(self._hello).encode("utf-8")
+        connection.sendall(PROTOCOL_MAGIC_V2 + struct.pack("!I", len(hello)) + hello)
+        while True:
+            status = read_status(connection)
+            kind = status.get("status")
+            if kind == "ok":
+                connection.settimeout(5)
+                self._on_accepted(status)
+                return
+            if kind == "waiting":
+                self._on_status("Разрешите подключение на экране телефона", False)
+                connection.settimeout(ALLOW_TIMEOUT)
+                continue
+            if kind == "denied":
+                reason = status.get("reason")
+                message = {
+                    "timeout": "На телефоне не ответили на запрос подключения",
+                    "cooldown": "Телефон недавно отказал этому компьютеру, попробуйте позже",
+                }.get(reason, "Телефон не разрешил подключение")
+                raise PhoneRefused(message, "denied", reason)
+            if kind == "busy":
+                raise PhoneRefused("Телефон уже передаёт видео на другой компьютер", "busy")
+            raise ValueError("Телефон ответил непонятно")
+
     def stop(self) -> None:
         self._stop.set()
         connection = self._connection
@@ -556,6 +635,9 @@ class H264FrameReceiver:
 
     def _run(self) -> None:
         try:
+            if self._phone is not None:
+                self._receive_from_phone()
+                return
             host = self._host
             if host is None:
                 connection = self._connect_to_usb_phone()
@@ -593,27 +675,71 @@ class H264FrameReceiver:
                     raise ConnectionError("Компьютер не поддерживает H.264-поток")
                 stream = response
                 self._on_status("Получаем H.264-видео по Wi-Fi…", False)
-            while not self._stop.is_set():
-                packet = read_video_packet(stream)
-                self._on_frame(packet)
-                with self._send_lock:
-                    pending = bytearray(USB_FRAME_ACK)
-                    command = self._pending_controls.pop() if self._pending_controls else b""
-                    pending.extend(struct.pack("!I", len(command)))
-                    pending.extend(command)
-                    connection.sendall(pending)
+            self._pump(stream, connection)
+        except PhoneRefused as error:
+            if not self._stop.is_set():
+                self._on_refused(error)
+                self._on_status(str(error), True)
         except (OSError, ConnectionError, ValueError) as error:
             if not self._stop.is_set():
                 self._on_status(f"Передача H.264 прервана: {error}", True)
         finally:
-            connection = self._connection
-            self._connection = None
-            if connection is not None:
-                connection.close()
-            forward = self._adb_forward
-            self._adb_forward = None
-            if forward is not None:
-                forward.close()
+            self._close()
+
+    def _close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+        forward = self._adb_forward
+        self._adb_forward = None
+        if forward is not None:
+            forward.close()
+
+    def _receive_from_phone(self) -> None:
+        phone = self._phone
+        # Over ADB the phone's version is not known beforehand: a version 1
+        # phone closes the connection on the version 2 magic, so try again.
+        versions = (2, 1) if phone.link == "adb" else (phone.protocol,)
+        for attempt, version in enumerate(versions):
+            connection = self._connect_to_phone()
+            self._connection = connection
+            if self._stop.is_set():
+                return
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            connection.settimeout(5)
+            try:
+                if version == 2:
+                    self._shake_hands_v2(connection)
+                else:
+                    connection.sendall(USB_PROTOCOL_MAGIC)
+                break
+            except (ConnectionError, OSError) as error:
+                if isinstance(error, PhoneRefused) or attempt == len(versions) - 1:
+                    raise
+                self._close()
+        link = {"usb": "по USB", "adb": "по USB (ADB)", "wifi": "по Wi-Fi"}[phone.link]
+        self._on_status(f"Получаем H.264-видео {link}…", False)
+        self._pump(_SocketReader(connection), connection)
+
+    def _pump(self, stream: BinaryIO | _SocketReader, connection: socket.socket) -> None:
+        """Receive frames and answer each, with a settings change if one waits.
+
+        The answer goes out before the frame is decoded, so the phone sends
+        the next one while this one is decoded and drawn: at 60 fps a frame
+        has 16.6 ms, which the round trip plus decoding a 1080p frame and
+        making its picture did not always leave. Still only one frame is on
+        its way at a time, so the latency stays bounded.
+        """
+        while not self._stop.is_set():
+            packet = read_video_packet(stream)
+            with self._send_lock:
+                pending = bytearray(USB_FRAME_ACK)
+                command = self._pending_controls.pop() if self._pending_controls else b""
+                pending.extend(struct.pack("!I", len(command)))
+                pending.extend(command)
+                connection.sendall(pending)
+            self._on_frame(packet)
 
 
 class H264Decoder:

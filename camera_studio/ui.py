@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import queue
+import socket
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
@@ -38,12 +39,12 @@ from camera_studio.pause_frame import (
     paused_frame,
     transition_frame,
 )
+from camera_studio.phones import LINKS, Phone, PhoneFinder, frame_rates, zoom_range
 from camera_studio.stream import (
-    CameraStreamServer,
     H264Decoder,
     H264FrameReceiver,
+    PhoneRefused,
     correct_stream_orientation,
-    local_ipv4_addresses,
     local_network_blocked,
 )
 from camera_studio.virtual_camera import VirtualCameraOutput
@@ -73,6 +74,12 @@ from camera_studio.widgets import (
 )
 
 STREAM_PORT = 8765
+LINK_NAMES = {"usb": "USB", "adb": "USB (ADB)", "wifi": "Wi-Fi"}
+# After a connection drops, the next try waits this long; after the phone
+# refused, it is left alone for a while unless the user picks it again.
+RETRY_DELAY = 2.0
+REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0}
+VPN_CHECK_INTERVAL = 10.0
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
 UPDATE_FIRST_CHECK_DELAY_MS = 3_000
@@ -190,8 +197,23 @@ class MainWindow(QWidget):
         self.frames: queue.Queue[Image.Image] = queue.Queue(maxsize=1)
         self.status_messages: queue.Queue[tuple[str, bool]] = queue.Queue()
         self.virtual_camera_status_messages: queue.Queue[tuple[int, str, bool]] = queue.Queue()
-        self.stream_server: CameraStreamServer | None = None
         self.receiver: H264FrameReceiver | None = None
+        # The phones around, from the finder thread, and the one connected.
+        self.phones: list[Phone] = []
+        self.phone_lists: queue.Queue[list[Phone]] = queue.Queue()
+        self.accepted: queue.Queue[tuple[int, dict]] = queue.Queue()
+        self.refusals: queue.Queue[tuple[int, PhoneRefused]] = queue.Queue()
+        self.phone: Phone | None = None
+        self.camera_info: dict | None = None
+        self.connection_run = 0
+        # Off once the user disconnects; picking a phone or Connect turns it on.
+        self.auto_connect = True
+        self.retry_at = 0.0
+        self.held_back: dict[str, float] = {}
+        self.wait_text = ""
+        self.vpn_checked_at = -VPN_CHECK_INTERVAL
+        self.finder: PhoneFinder | None = None
+        self._devices_shown: tuple | None = None
         self.virtual_camera: VirtualCameraOutput | None = None
         self.virtual_camera_run = 0
         self.virtual_camera_device = ""
@@ -210,11 +232,14 @@ class MainWindow(QWidget):
         self._paused_background: Image.Image | None = None
         self.frame_size = (0, 0)
         self.measured_fps = 0.0
-        self.link = "USB"
+        self.link = ""
         self.error_text = ""
         self.vpn_blocks_lan = False
         self.profile_index = DEFAULT_PROFILE
         self._texts: list[tuple[Callable[[str], None], str, bool]] = []
+        self.scale_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        # The frame rates the connected phone's lens gives, None when unknown.
+        self.lens_frame_rates: dict[str, tuple[int, ...] | None] = {}
         self._ready = False
         # Updates: results from the checking and downloading threads.
         self.update_messages: queue.Queue[tuple] = queue.Queue()
@@ -254,12 +279,19 @@ class MainWindow(QWidget):
         self.poll_timer.setInterval(16)
         self.poll_timer.timeout.connect(self._poll_stream)
 
+        self.computer = self._computer_identity()
         self._build()
         self._load_settings()
         self._ready = True
         self.retranslate()
         self.setFocus()
         self.poll_timer.start()
+        self.finder = PhoneFinder(
+            self.computer,
+            self.phone_lists.put,
+            use_adb=lambda: self.adb_switch.isChecked(),
+        )
+        self.finder.start()
 
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(UPDATE_CHECK_INTERVAL_MS)
@@ -403,6 +435,7 @@ class MainWindow(QWidget):
         scale = QHBoxLayout()
         low_label = self._label(low_key, role="secondary")
         high_label = self._label(high_key, role="secondary")
+        self.scale_labels[key] = (low_label, high_label)
         if low is not None:
             low_label.setText(low)
         if high is not None:
@@ -441,9 +474,11 @@ class MainWindow(QWidget):
         groups.setSpacing(28)
 
         connection = self._group(groups, "connection")
-        self.mode_seg = Segmented(["USB", "Wi-Fi"], self)
-        self.mode_seg.changed.connect(self._select_mode)
-        connection.addWidget(self.mode_seg)
+        self.device_select = Select(self)
+        self._bind(self.device_select.setAccessibleName, "device")
+        # Only the user's choice connects; refilling the list does not.
+        self.device_select.activated.connect(self._pick_phone)
+        connection.addWidget(self.device_select)
         self.connect_button = QPushButton(self)
         self.connect_button.setObjectName("action")
         self.connect_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -494,7 +529,7 @@ class MainWindow(QWidget):
 
         lens = self._group(controls, "lens")
         self.lens_seg = Segmented(["rear", "front"], self)
-        self.lens_seg.changed.connect(self._camera_control_changed)
+        self.lens_seg.changed.connect(self._lens_changed)
         lens.addWidget(self.lens_seg)
         self.zoom_slider = Slider(10, 100, 10, self)
         self.zoom_slider.valueChanged.connect(self._camera_control_changed)
@@ -559,10 +594,6 @@ class MainWindow(QWidget):
         self.mirror_switch = self._switch_row(preview, "opt_mirror")
 
         connection = self._group(layout, "connection")
-        self.host_select = Select(self)
-        self.host_select.addItems(self._local_ipv4_addresses())
-        self._bind(self.host_select.setAccessibleName, "opt_host")
-        self._labeled(connection, "opt_host", self.host_select)
         self.adb_switch = self._switch_row(connection, "opt_adb")
 
         about = self._label(role="secondary")
@@ -586,7 +617,6 @@ class MainWindow(QWidget):
             (self.adb_switch, "adb_fallback"),
         ):
             switch.toggled.connect(lambda checked, key=name: self._save_option(key, checked))
-        self.host_select.currentTextChanged.connect(lambda host: self._save_option("host", host))
 
     def _build_profile_menu(self) -> None:
         self.profile_menu = QMenu(self)
@@ -673,9 +703,6 @@ class MainWindow(QWidget):
         self.info_switch.setChecked(self.settings.value("info", False, type=bool))
         self.mirror_switch.setChecked(self.settings.value("mirror", False, type=bool))
         self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
-        host = str(self.settings.value("host", ""))
-        if self.host_select.findText(host) >= 0:
-            self.host_select.setCurrentText(host)
         self._connect_settings()
 
     def _save_option(self, key: str, value: object) -> None:
@@ -725,6 +752,7 @@ class MainWindow(QWidget):
         self.profile_button.set_texts(self.t("profile"), resolution, f"{fps}fps")
         for index, action in enumerate(self.profile_actions):
             action.setIcon(self._check_icon if index == self.profile_index else self._blank_icon)
+            action.setEnabled(self._profile_usable(index))
         self._refresh_window_buttons()
 
         if self.error_text:
@@ -732,38 +760,39 @@ class MainWindow(QWidget):
         elif connected:
             state, text = "on", self.t("status_on", link=self.link)
         elif waiting:
-            usb = self.mode_seg.value() == "USB"
-            state, text = "wait", self.t("status_usb" if usb else "status_wifi")
+            state, text = "wait", self.wait_text or self.t("status_connecting", phone=self._phone_label(self.phone))
+        elif self.auto_connect:
+            state, text = "wait", self.t("status_searching")
         else:
             state, text = "off", self.t("status_off")
         self.status_icon.setPixmap(self.status_pixmaps[state])
         self.status_label.setText(text)
 
-        if not self.streaming:
-            button_text = self.t("connect")
-        elif connected or self.receiver is not None:
+        active = self.receiver is not None
+        if active:
             button_text = self.t("disconnect")
-        else:
+        elif self.auto_connect:
             button_text = self.t("stop_waiting")
+        else:
+            button_text = self.t("connect")
         self.connect_button.setText(button_text)
-        if self.connect_button.property("quiet") != self.streaming:
-            self.connect_button.setProperty("quiet", self.streaming)
+        quiet = active or self.auto_connect
+        if self.connect_button.property("quiet") != quiet:
+            self.connect_button.setProperty("quiet", quiet)
             self.connect_button.style().unpolish(self.connect_button)
             self.connect_button.style().polish(self.connect_button)
-        self.mode_seg.setEnabled(not self.streaming)
 
-        if self.mode_seg.value() == "USB":
-            if self.vpn_blocks_lan:
-                hint = self.t("hint_usb_vpn")
-            else:
-                # macOS has no driver for the RNDIS tethering most Android
-                # phones use, so there the ADB route is the one that works.
-                hint = self.t("hint_usb_macos" if MACOS else "hint_usb")
+        if connected:
+            hint = self.t("hint_wifi") if self.phone is not None and self.phone.link == "wifi" else ""
         elif self.vpn_blocks_lan:
-            hint = self.t("hint_wifi_vpn")
+            hint = self.t("hint_usb_vpn")
         else:
-            hint = self.t("hint_wifi", host=self.host_select.currentText())
+            # macOS has no driver for the RNDIS tethering most Android
+            # phones use, so there the ADB route is the one that works.
+            hint = self.t("hint_usb_macos" if MACOS else "hint_usb")
         self.hint_label.setText(hint)
+        self.hint_label.setVisible(bool(hint))
+        self._fill_devices()
 
         self.controls.setEnabled(connected)
         self.focus_field.setEnabled(connected and not self.autofocus_switch.isChecked())
@@ -826,10 +855,6 @@ class MainWindow(QWidget):
         self._refresh()
         self._schedule_camera_control_update()
 
-    def _select_mode(self, _mode: str) -> None:
-        self.error_text = ""
-        self._refresh()
-
     # ------------------------------------------------------- camera controls
 
     def _camera_control_changed(self, *_args: object) -> None:
@@ -849,6 +874,43 @@ class MainWindow(QWidget):
         self.lens_seg.set_value("rear")
         self.zoom_slider.setValue(10)
         self._camera_control_changed()
+
+    def _lens_changed(self, *_args: object) -> None:
+        self._apply_zoom_range()
+        self._camera_control_changed()
+
+    def _lens_source(self) -> Phone | None:
+        """What is known about the phone's lenses: from its handshake, else from discovery."""
+        if self.camera_info is not None:
+            return Phone(id="", name="", link="usb", lenses=self.camera_info.get("lenses") or {})
+        return self.phone
+
+    def _profile_usable(self, index: int) -> bool:
+        resolution, fps, _size = PROFILES[index]
+        rates = self.lens_frame_rates.get(resolution)
+        return rates is None or fps in rates
+
+    def _apply_zoom_range(self) -> None:
+        """Let the zoom go as wide and as far as the phone's lens does,
+        and offer only the frame rates it really gives."""
+        source = self._lens_source()
+        lens = PHONE_LENS[self.lens_seg.value()]
+        self.lens_frame_rates = {
+            resolution: frame_rates(source, lens, resolution)
+            for resolution in dict.fromkeys(r for r, _, _ in PROFILES)
+        }
+        resolution, fps, _size = PROFILES[self.profile_index]
+        if not self._profile_usable(self.profile_index):
+            # The same resolution at the best rate the lens has there.
+            usable = [i for i, (r, _, _) in enumerate(PROFILES) if r == resolution and self._profile_usable(i)]
+            if usable:
+                self.profile_index = max(usable, key=lambda i: PROFILES[i][1])
+                self._schedule_camera_control_update()
+        low, high = zoom_range(source, lens)
+        self.zoom_slider.setRange(round(low * 10), round(high * 10))
+        low_label, high_label = self.scale_labels["zoom"]
+        low_label.setText(f"{format_number(self.language, low, 1 if low % 1 else 0)}×")
+        high_label.setText(f"{format_number(self.language, high, 1 if high % 1 else 0)}×")
 
     def camera_command(self) -> dict[str, object]:
         resolution, fps, _size = PROFILES[self.profile_index]
@@ -871,8 +933,6 @@ class MainWindow(QWidget):
         try:
             if self.receiver is not None:
                 self.receiver.send_control(self.camera_command())
-            elif self.stream_server is not None:
-                self.stream_server.send_control(self.camera_command())
         except (OSError, ConnectionError):
             # The phone has just gone away; the stream reports that itself.
             pass
@@ -880,61 +940,154 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------ connection
 
     def _toggle_connection(self) -> None:
-        if self.stream_server is not None or self.receiver is not None:
+        if self.receiver is not None or self.auto_connect:
+            # Stop connecting by itself until the user asks again.
+            self.auto_connect = False
             self._disconnect()
-            self._refresh()
-            return
-
-        self.error_text = ""
-        self.decoder = H264Decoder()
-        self.virtual_camera_failed = False
-        self.vpn_blocks_lan = local_network_blocked()
-        if self.mode_seg.value() == "USB":
-            self.link = "USB"
-            self.receiver = H264FrameReceiver(
-                None,
-                STREAM_PORT,
-                self._receive_frame,
-                self._receive_status,
-                usb=True,
-                adb_fallback=self.adb_switch.isChecked(),
-            )
-            self.streaming = True
-            self.receiver.start()
         else:
-            self.link = "Wi-Fi"
-            host = self.host_select.currentText().strip()
-            try:
-                address = ipaddress.IPv4Address(host)
-                usable = address.is_private and not address.is_loopback
-            except ipaddress.AddressValueError:
-                usable = False
-            if not usable:
-                self.error_text = self.t("error_host")
-                self._refresh()
-                return
-            self.stream_server = CameraStreamServer(
-                self._receive_frame,
-                self._receive_status,
-                host=host,
-            )
-            self.streaming = True
-            try:
-                self.stream_server.start()
-            except OSError as error:
-                self.streaming = False
-                self.stream_server = None
-                self.error_text = self.t("error_port", port=STREAM_PORT, error=error)
+            self.auto_connect = True
+            self.retry_at = 0.0
+            self.held_back.clear()
+            self.error_text = ""
+            self._maybe_connect()
         self._refresh()
 
+    @staticmethod
+    def _computer_name() -> str:
+        name = socket.gethostname().removesuffix(".local").strip()
+        return (name or "Computer")[:64]
+
+    def _computer_identity(self) -> dict[str, str]:
+        computer_id = str(self.settings.value("computer_id", ""))
+        if not computer_id:
+            computer_id = str(uuid.uuid4())
+            self.settings.setValue("computer_id", computer_id)
+        return {"id": computer_id, "name": self._computer_name()}
+
+    def _phone_label(self, phone: Phone | None) -> str:
+        if phone is None:
+            return ""
+        return f"{phone.name or self.t('phone_unnamed')} · {LINK_NAMES[phone.link]}"
+
+    def _phone_id(self, phone: Phone) -> str:
+        """The phone's own id; an ADB entry learns it on its first connection."""
+        if phone.link == "adb":
+            return str(self.settings.value(f"adb_ids/{phone.serial}", phone.id))
+        return phone.id
+
+    def _fill_devices(self) -> None:
+        listed = self.phones
+        if self.phone is not None and all(p.key != self.phone.key for p in listed):
+            listed = [self.phone, *listed]  # connected, though no longer answering probes
+        current = self.phone.key if self.phone is not None else None
+        shown = ([(p.key, self._phone_label(p)) for p in listed], current, self.language)
+        if shown == self._devices_shown:
+            return
+        self._devices_shown = shown
+        select = self.device_select
+        select.blockSignals(True)
+        select.clear()
+        if not listed:
+            select.addItem(self.t("devices_none"), None)
+        for phone in listed:
+            select.addItem(self._phone_label(phone), phone.key)
+        if current is not None:
+            select.setCurrentIndex([p.key for p in listed].index(current))
+        select.setEnabled(bool(listed))
+        select.blockSignals(False)
+
+    def _pick_phone(self, index: int) -> None:
+        key = self.device_select.itemData(index)
+        phone = next((p for p in self.phones if p.key == key), None)
+        if phone is None:
+            return
+        self.settings.setValue("phone_id", self._phone_id(phone))
+        self.held_back.pop(phone.key, None)
+        self.auto_connect = True
+        if self.receiver is not None and self.phone is not None and self.phone.key == phone.key:
+            return
+        self._disconnect()
+        self._connect_to(phone)
+        self._refresh()
+
+    def _auto_target(self) -> Phone | None:
+        """The phone to connect to by itself: the one chosen last, else one on USB."""
+        now = time.monotonic()
+        ready = [p for p in self.phones if self.held_back.get(p.key, 0.0) <= now]
+        preferred = str(self.settings.value("phone_id", ""))
+        mine = [p for p in ready if preferred and self._phone_id(p) == preferred]
+        if mine:
+            return min(mine, key=lambda p: LINKS.index(p.link))
+        cabled = [p for p in ready if p.link in ("usb", "adb")]
+        return min(cabled, key=lambda p: LINKS.index(p.link)) if cabled else None
+
+    def _maybe_connect(self) -> None:
+        if not self.auto_connect or self.receiver is not None:
+            return
+        now = time.monotonic()
+        if now < self.retry_at:
+            return
+        if now - self.vpn_checked_at >= VPN_CHECK_INTERVAL:
+            self.vpn_checked_at = now
+            blocked = local_network_blocked()
+            if blocked != self.vpn_blocks_lan:
+                self.vpn_blocks_lan = blocked
+                self._refresh()
+        target = self._auto_target()
+        if target is not None:
+            self._connect_to(target)
+            self._refresh()
+
+    def _connect_to(self, phone: Phone) -> None:
+        self.error_text = ""
+        self.wait_text = ""
+        self.decoder = H264Decoder()
+        self.virtual_camera_failed = False
+        self.phone = phone
+        self.camera_info = None
+        self.link = LINK_NAMES[phone.link]
+        self._apply_zoom_range()
+        self.connection_run += 1
+        run = self.connection_run
+        token = str(self.settings.value(f"tokens/{self._phone_id(phone)}", ""))
+        self.receiver = H264FrameReceiver(
+            None,
+            STREAM_PORT,
+            self._receive_frame,
+            lambda message, is_error: self._receive_status(message, is_error, run),
+            usb=phone.link != "wifi",
+            phone=phone,
+            hello={**self.computer, "token": token},
+            on_accepted=lambda status: self.accepted.put((run, status)),
+            on_refused=lambda error: self.refusals.put((run, error)),
+        )
+        self.streaming = True
+        self.receiver.start()
+
+    def _accepted(self, status: dict) -> None:
+        """A version 2 phone let this computer in: remember it, and its lenses."""
+        camera = status.get("camera") if isinstance(status.get("camera"), dict) else {}
+        phone_id = str(camera.get("id") or (self.phone.id if self.phone else ""))
+        if not phone_id:
+            return
+        self.camera_info = camera
+        if self.phone is not None and self.phone.link == "adb":
+            self.settings.setValue(f"adb_ids/{self.phone.serial}", phone_id)
+        if isinstance(status.get("token"), str) and status["token"]:
+            self.settings.setValue(f"tokens/{phone_id}", status["token"])
+        self.settings.setValue("phone_id", phone_id)
+        self.wait_text = ""
+        self._apply_zoom_range()
+
     def _disconnect(self) -> None:
-        if self.stream_server is not None:
-            self.stream_server.stop()
-            self.stream_server = None
         if self.receiver is not None:
             self.receiver.stop()
             self.receiver = None
+        self.connection_run += 1  # what the old connection still reports is stale
         self.streaming = False
+        self.phone = None
+        self.camera_info = None
+        self.wait_text = ""
         self._forget_camera()
 
     def _forget_camera(self) -> None:
@@ -957,17 +1110,6 @@ class MainWindow(QWidget):
             pass
         self.preview.set_pause(None, animate=False)
         self.preview.set_image(None)
-
-    @staticmethod
-    def _local_ipv4_addresses() -> list[str]:
-        return sorted(
-            local_ipv4_addresses(),
-            key=lambda address: (
-                not address.startswith("192.168."),
-                not address.startswith("10."),
-                address,
-            ),
-        ) or ["127.0.0.1"]
 
     # ---------------------------------------------------------------- stream
 
@@ -1000,8 +1142,8 @@ class MainWindow(QWidget):
                     pass
                 self.frames.put_nowait(image)
 
-    def _receive_status(self, message: str, is_error: bool) -> None:
-        self.status_messages.put((message, is_error))
+    def _receive_status(self, message: str, is_error: bool, run: int | None = None) -> None:
+        self.status_messages.put((self.connection_run if run is None else run, message, is_error))
 
     def _toggle_pause(self) -> None:
         if not self.camera_connected:
@@ -1110,13 +1252,38 @@ class MainWindow(QWidget):
 
         while True:
             try:
-                message, is_error = self.status_messages.get_nowait()
+                phones = self.phone_lists.get_nowait()
             except queue.Empty:
                 break
+            self.phones = phones
+            changed = True
+        while True:
+            try:
+                run, status = self.accepted.get_nowait()
+            except queue.Empty:
+                break
+            if run == self.connection_run:
+                self._accepted(status)
+                changed = True
+        while True:
+            try:
+                run, refusal = self.refusals.get_nowait()
+            except queue.Empty:
+                break
+            if run == self.connection_run and self.phone is not None:
+                pause = REFUSED_PAUSE.get(refusal.status, RETRY_DELAY)
+                self.held_back[self.phone.key] = time.monotonic() + pause
+        while True:
+            try:
+                run, message, is_error = self.status_messages.get_nowait()
+            except queue.Empty:
+                break
+            if run != self.connection_run:
+                continue
             changed = True
             if not is_error:
-                if "(ADB)" in message:
-                    self.link = "USB (ADB)"
+                if message.startswith("Разрешите"):
+                    self.wait_text = self.t("status_allow")
                 continue
             self.error_text = message
             self._forget_camera()
@@ -1124,6 +1291,14 @@ class MainWindow(QWidget):
                 self.receiver.stop()
                 self.receiver = None
                 self.streaming = False
+            self.phone = None
+            self.camera_info = None
+            self.wait_text = ""
+            self.retry_at = time.monotonic() + RETRY_DELAY
+        if self.receiver is None and self.auto_connect:
+            receiver_before = self.receiver
+            self._maybe_connect()
+            changed = changed or self.receiver is not receiver_before
 
         try:
             frame = self.frames.get_nowait()
@@ -1263,6 +1438,9 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.poll_timer.stop()
+        if self.finder is not None:
+            self.finder.stop()
+            self.finder = None
         self._disconnect()
         super().closeEvent(event)
 

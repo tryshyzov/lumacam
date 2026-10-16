@@ -103,10 +103,14 @@ class H264TransportTests(unittest.TestCase):
                 with client:
                     stream = client.makefile("rb")
                     handshakes.append(stream.read(len(USB_PROTOCOL_MAGIC)))
-                    client.sendall(struct.pack("!I", len(access_unit)) + access_unit)
-                    acknowledgements.append(stream.read(5))
-                    payload_length = struct.unpack("!I", acknowledgements[0][1:])[0]
-                    control_payloads.append(stream.read(payload_length))
+                    # The first frame is answered before it is handled, so
+                    # the settings sent while handling it ride on the
+                    # answer to the second.
+                    for _ in range(2):
+                        client.sendall(struct.pack("!I", len(access_unit)) + access_unit)
+                        acknowledgements.append(stream.read(5))
+                        payload_length = struct.unpack("!I", acknowledgements[-1][1:])[0]
+                        control_payloads.append(stream.read(payload_length))
                     acknowledged.set()
                     # Hold the connection until the test is done; closing it
                     # earlier is a phone hanging up, which the receiver reports.
@@ -130,17 +134,21 @@ class H264TransportTests(unittest.TestCase):
         try:
             self.assertTrue(received.wait(2))
             self.assertEqual(handshakes, [USB_PROTOCOL_MAGIC])
-            self.assertEqual(frames, [access_unit])
             self.assertTrue(acknowledged.wait(2))
+            deadline = time.monotonic() + 2
+            while len(frames) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(frames, [access_unit, access_unit])
             self.assertEqual(errors, [])
             self.assertEqual(
                 acknowledgements,
                 [
+                    USB_FRAME_ACK + struct.pack("!I", 0),
                     USB_FRAME_ACK
-                    + struct.pack("!I", len(encode_control_payload(command)))
+                    + struct.pack("!I", len(encode_control_payload(command))),
                 ],
             )
-            self.assertEqual(control_payloads, [encode_control_payload(command)])
+            self.assertEqual(control_payloads, [b"", encode_control_payload(command)])
         finally:
             receiver.stop()
             finished.set()
