@@ -1,6 +1,7 @@
 package com.lumalink.companion
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -8,10 +9,11 @@ import android.graphics.drawable.GradientDrawable
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.net.Uri
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
-import android.text.InputType
 import android.util.Log
 import android.util.Range
 import android.util.Size
@@ -20,7 +22,6 @@ import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -45,10 +46,10 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
+import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -59,10 +60,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsButton: ImageView
     private lateinit var lensTag: TextView
     private lateinit var sheet: LinearLayout
-    private lateinit var modeControl: SegmentedControl
-    private lateinit var hostField: LinearLayout
-    private lateinit var hostInput: EditText
-    private lateinit var streamButton: TextView
     private lateinit var hintText: TextView
     private lateinit var lensButton: LinearLayout
     private lateinit var settingsOverlay: FrameLayout
@@ -70,6 +67,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var languageControl: SegmentedControl
     private lateinit var keepAwakeToggle: ToggleView
     private lateinit var settingsBack: OnBackPressedCallback
+    private lateinit var computersList: LinearLayout
     private lateinit var updateBanner: LinearLayout
     private lateinit var updateBannerText: TextView
     private lateinit var updateBannerButton: TextView
@@ -87,8 +85,18 @@ class MainActivity : ComponentActivity() {
     private var requestedResolution = DEFAULT_RESOLUTION
     // Also read on the camera and GL threads.
     @Volatile private var requestedFps = DEFAULT_FPS
-    @Volatile private var publisher: H264Publisher? = null
-    @Volatile private var localServer: UsbFrameServer? = null
+    @Volatile private var server: FrameServer? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private val allowedComputers by lazy { AllowedComputers(preferences) }
+
+    /** The camera settings in use, as the computer sends them (see [applyCameraControl]). */
+    private val cameraSettings = JSONObject(DEFAULT_SETTINGS)
+    @Volatile private var settingsSnapshot = JSONObject(DEFAULT_SETTINGS)
+    @Volatile private var lensesSnapshot = JSONObject()
+
+    /** How zoom maps onto this side's camera modules, and the module bound now. */
+    private var zoomPlan: ZoomPlan? = null
+    private var boundModule: CameraModule? = null
     private var videoEncoder: H264Encoder? = null
     private var gpuCameraPipeline: GpuCameraPipeline? = null
     private var gpuFailed = false
@@ -119,9 +127,12 @@ class MainActivity : ComponentActivity() {
     /** A camera problem that keeps the phone from streaming at all. */
     private var cameraProblem: String? = null
 
-    /** The last link event, or null while not streaming. */
-    private var linkState: LinkEvent? = null
-    private var linkDetail: String? = null
+    /** The computer streaming now, or null while the phone waits. */
+    private var connected: Computer? = null
+    private var serverProblem: String? = null
+    private var oldStudioSeenAt = 0L
+    private var askDialog: AlertDialog? = null
+    private var askingId: String? = null
 
     /** A passing message shown in place of the hint until the next state change. */
     private var notice: String? = null
@@ -163,6 +174,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        startServer()
+    }
+
+    override fun onStop() {
+        stopServer()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
@@ -191,8 +212,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         updater?.close()
-        publisher?.stop()
-        localServer?.stop()
+        stopServer()
         videoEncoder?.close()
         videoEncoder = null
         cameraProvider?.unbindAll()
@@ -315,44 +335,6 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(Palette.CHROME)
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        modeControl = SegmentedControl(this, listOf(MODE_USB, MODE_WIFI)).apply {
-            onChange = {
-                notice = null
-                linkState = null
-                render()
-            }
-        }
-        translate("modeLabel") { modeControl.contentDescription = it }
-        sheet.addView(modeControl, matchWidth())
-
-        hostField = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val hostLabel = label(12f)
-        translate("hostLabel") { hostLabel.text = it }
-        hostField.addView(hostLabel, matchWidth())
-        hostInput = EditText(this).apply {
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            hint = "192.168.1.20"
-            textSize = 14f
-            setTextColor(Palette.TEXT)
-            setHintTextColor(Palette.BORDER_CONTROL)
-            minHeight = dp(34)
-            setPadding(dp(10), 0, dp(10), 0)
-            background = rounded(Color.TRANSPARENT, dp(6).toFloat(), Palette.BORDER_CONTROL, dp(1))
-        }
-        translate("hostLabel") { hostInput.contentDescription = it }
-        hostField.addView(hostInput, matchWidth(4))
-        sheet.addView(hostField, matchWidth(8))
-
-        streamButton = label(13f, bold = true).apply {
-            gravity = Gravity.CENTER
-            minHeight = dp(36)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { toggleStreaming() }
-        }
-        sheet.addView(streamButton, matchWidth(8))
-
         hintText = label(12f, Palette.TEXT_SECONDARY).apply { setLineSpacing(0f, 1.15f) }
         sheet.addView(hintText, matchWidth(8))
 
@@ -486,6 +468,10 @@ class MainActivity : ComponentActivity() {
         awakeRow.addView(keepAwakeToggle)
         settingsPanel.addView(awakeRow, matchWidth(6))
 
+        settingsPanel.addView(groupTitle("computers"), matchWidth(14))
+        computersList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        settingsPanel.addView(computersList, matchWidth(6))
+
         if (updater != null) {
             settingsPanel.addView(groupTitle("updates"), matchWidth(14))
             val updateRow = LinearLayout(this).apply {
@@ -537,7 +523,7 @@ class MainActivity : ComponentActivity() {
             null
         }
 
-    private fun streaming(): Boolean = publisher != null || localServer != null
+    private fun streaming(): Boolean = server?.streaming == true
 
     /** The release the update button would install, if any. */
     private fun offeredRelease(): AppRelease? =
@@ -592,7 +578,35 @@ class MainActivity : ComponentActivity() {
         updateBannerButton.visibility = updateButton.visibility
     }
 
+    /** The computers allowed over Wi-Fi, each with a button to forget it. */
+    private fun renderComputers() {
+        computersList.removeAllViews()
+        val computers = allowedComputers.all()
+        if (computers.isEmpty()) {
+            computersList.addView(label(13f, Palette.TEXT_SECONDARY).apply { text = t("computersNone") }, matchWidth())
+            return
+        }
+        for (computer in computers) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(36)
+            }
+            row.addView(
+                label(13f).apply { text = computer.name },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            val forget = smallButton {
+                allowedComputers.forget(computer.id)
+                renderComputers()
+            }.apply { text = t("forget") }
+            row.addView(forget)
+            computersList.addView(row, matchWidth())
+        }
+    }
+
     private fun openSettings() {
+        renderComputers()
         settingsOverlay.visibility = View.VISIBLE
         settingsBack.isEnabled = true
     }
@@ -608,43 +622,28 @@ class MainActivity : ComponentActivity() {
         for ((setter, key) in translated) setter(t(key))
         val streaming = streaming()
         renderUpdate(streaming)
-        val wifi = modeControl.value == MODE_WIFI
 
         val problem = cameraProblem
+        val computer = connected
         val (icon, status) = when {
             problem != null -> R.drawable.ic_status_error to problem
             !cameraReady -> R.drawable.ic_status_wait to t("startingCamera")
-            linkState == LinkEvent.CONNECTED -> R.drawable.ic_status_live to t("live", modeControl.value)
-            linkState == LinkEvent.FAILED -> R.drawable.ic_status_error to t("failed", linkDetail ?: t("closed"))
-            linkState == LinkEvent.NOT_FOUND -> R.drawable.ic_status_error to t("failed", t("notFound"))
-            linkState == LinkEvent.NO_ANSWER -> R.drawable.ic_status_error to t("failed", t("noAnswer"))
-            linkState == LinkEvent.NEED_TETHERING -> R.drawable.ic_status_wait to t("needTethering")
-            linkState == LinkEvent.WAITING -> R.drawable.ic_status_wait to t("waitUsb")
-            linkState == LinkEvent.SEARCHING -> R.drawable.ic_status_wait to t("waitWifi")
-            linkState == LinkEvent.CONNECTING -> R.drawable.ic_status_wait to t("connecting", linkDetail ?: "")
-            else -> R.drawable.ic_status_ready to t("ready")
+            computer != null -> R.drawable.ic_status_live to t(
+                "liveTo",
+                computer.name ?: t("computer"),
+                t(if (computer.link == Link.USB) "linkUsb" else "linkWifi"),
+            )
+            serverProblem != null -> R.drawable.ic_status_error to serverProblem!!
+            else -> R.drawable.ic_status_wait to t("waiting")
         }
         statusIcon.setImageResource(icon)
         statusText.text = status
 
-        streamButton.text = t(if (streaming) "stop" else "start")
-        val radius = dp(6).toFloat()
-        streamButton.background = if (streaming) {
-            pressable(rounded(Color.TRANSPARENT, radius, Palette.BORDER_CONTROL, dp(1)), Palette.PRESS_ON_DARK)
-        } else {
-            pressable(rounded(Palette.TEXT, radius), Palette.PRESS_ON_LIGHT)
-        }
-        streamButton.setTextColor(if (streaming) Palette.TEXT else Palette.TEXT_ON_SOLID)
-        streamButton.isEnabled = cameraReady
-        streamButton.alpha = if (cameraReady) 1f else 0.45f
-
-        modeControl.isEnabled = !streaming
-        hostField.visibility = if (wifi && !streaming) View.VISIBLE else View.GONE
+        val oldStudio = SystemClock.elapsedRealtime() - oldStudioSeenAt < OLD_STUDIO_HINT_MS && oldStudioSeenAt > 0
         hintText.text = notice ?: when {
-            linkState == LinkEvent.CONNECTED -> t("hintLive")
-            linkState == LinkEvent.NOT_FOUND -> t("hintNotFound")
-            wifi -> t("hintWifi")
-            else -> t("hintUsb")
+            computer != null -> t("hintLive")
+            oldStudio -> t("oldStudio")
+            else -> t("hintWaiting")
         }
         lensTag.text = t(if (lensFacing == CameraSelector.LENS_FACING_FRONT) "front" else "rear")
 
@@ -681,14 +680,19 @@ class MainActivity : ComponentActivity() {
 
     private fun bindCamera() {
         val provider = cameraProvider ?: return
-        val selector = CameraSelector.Builder()
-            .requireLensFacing(lensFacing)
-            .build()
-        if (!provider.hasCamera(selector)) {
+        updateLenses(provider)
+        val plan = CameraModules.plan(provider.availableCameraInfos, lensFacing, analysisSize(requestedResolution))
+        if (plan == null) {
             cameraProblem = t("cameraUnavailable")
             render()
             return
         }
+        val zoom = cameraSettings.optDouble("zoom", 1.0).toFloat()
+        val current = boundModule?.takeIf { it == plan.main || it == plan.ultraWide || it == plan.telephoto }
+        val module = plan.moduleFor(zoom, current ?: plan.main)
+        zoomPlan = plan
+        boundModule = module
+        val selector = CameraModules.selector(lensFacing, module)
 
         val fpsRange = cameraFpsRange(selector, requestedFps)
         val previewBuilder = Preview.Builder()
@@ -734,16 +738,7 @@ class MainActivity : ComponentActivity() {
                 provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange, info))
             }
             cameraReady = true
-            applyCameraSettings(JSONObject().apply {
-                put("autofocus", true)
-                put("focus", 0.5)
-                put("exposure", 0.0)
-                put("iso", "Авто")
-                put("whiteBalance", "Авто")
-                put("zoom", 1.0)
-                put("fps", requestedFps)
-                put("resolution", requestedResolution)
-            })
+            applyCameraSettings(cameraSettings)
             cameraProblem = null
             render()
         } catch (error: Exception) {
@@ -825,7 +820,7 @@ class MainActivity : ComponentActivity() {
         private var size = Size(0, 0)
 
         override fun encoderFor(size: Size): H264Encoder? {
-            if (publisher == null && localServer == null) return null
+            if (server?.streaming != true) return null
             this.size = size
             val current = encoder
             if (current != null && current.matches(size.width, size.height, requestedFps)) {
@@ -895,6 +890,8 @@ class MainActivity : ComponentActivity() {
 
     private fun applyCameraControl(command: JSONObject) {
         try {
+            for (key in command.keys()) cameraSettings.put(key, command.get(key))
+            settingsSnapshot = JSONObject(cameraSettings.toString())
             val resolution = command.optString("resolution", requestedResolution)
                 .takeIf { it in setOf("480p", "720p", "1080p") }
                 ?: requestedResolution
@@ -904,14 +901,20 @@ class MainActivity : ComponentActivity() {
             } else {
                 CameraSelector.LENS_FACING_BACK
             }
-            val needsRebind =
+            var needsRebind =
                 resolution != requestedResolution || fps != requestedFps || facing != lensFacing
+            if (facing != lensFacing) boundModule = null
             requestedResolution = resolution
             requestedFps = fps
-            if (facing != lensFacing) lensFacing = facing
-            if (needsRebind) bindCamera()
-
-            applyCameraSettings(command)
+            lensFacing = facing
+            val plan = zoomPlan
+            val bound = boundModule
+            if (!needsRebind && plan != null && bound != null) {
+                val zoom = cameraSettings.optDouble("zoom", 1.0).toFloat()
+                // Crossing into another module's range rebinds the camera.
+                needsRebind = plan.moduleFor(zoom, bound) != bound
+            }
+            if (needsRebind) bindCamera() else applyCameraSettings(cameraSettings)
         } catch (error: Exception) {
             Log.e(TAG, "Could not apply camera settings", error)
             showNotice(t("settingsFailed", error.localizedMessage))
@@ -1034,12 +1037,11 @@ class MainActivity : ComponentActivity() {
             ContextCompat.getMainExecutor(this),
         )
 
-        val zoomState = camera.cameraInfo.zoomState.value
-        if (zoomState != null) {
+        val plan = zoomPlan
+        val module = boundModule
+        if (plan != null && module != null) {
             val requestedZoom = command.optDouble("zoom", 1.0).toFloat()
-            camera.cameraControl.setZoomRatio(
-                requestedZoom.coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio),
-            )
+            camera.cameraControl.setZoomRatio(plan.moduleZoom(requestedZoom, module))
         }
         if (!manualIso) {
             val range = camera.cameraInfo.exposureState.exposureCompensationRange
@@ -1054,17 +1056,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun switchCamera() {
-        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-            CameraSelector.LENS_FACING_FRONT
-        } else {
-            CameraSelector.LENS_FACING_BACK
-        }
-        bindCamera()
+        val front = lensFacing == CameraSelector.LENS_FACING_BACK
+        applyCameraControl(JSONObject().put("lens", if (front) "Фронтальная" else "Задняя").put("zoom", 1.0))
     }
+
+    /** Each lens's zoom range, for discovery and the handshake. */
+    private fun updateLenses(provider: ProcessCameraProvider) {
+        val lenses = JSONObject()
+        val size = analysisSize(requestedResolution)
+        for ((token, facing) in listOf(
+            "Задняя" to CameraSelector.LENS_FACING_BACK,
+            "Фронтальная" to CameraSelector.LENS_FACING_FRONT,
+        )) {
+            val range = CameraModules.plan(provider.availableCameraInfos, facing, size)?.range ?: continue
+            lenses.put(token, JSONObject().put("zoom", JSONArray().put(round2(range.start)).put(round2(range.endInclusive))))
+        }
+        lensesSnapshot = lenses
+    }
+
+    private fun round2(value: Float): Double = Math.round(value * 100.0) / 100.0
 
     private fun analyzeFrame(image: ImageProxy) {
         try {
-            if (publisher == null && localServer == null) return
+            if (server?.streaming != true) return
             // Camera frames arrive about one interval apart, a little early
             // or late; a strict limit dropped every early one, and with it
             // a third of the frames at 30 fps.
@@ -1148,8 +1162,7 @@ class MainActivity : ComponentActivity() {
         frameStartedAt: Long,
     ) {
         packets.forEach { packet ->
-            publisher?.publishFrame(packet)
-            localServer?.publishFrame(packet)
+            server?.publishFrame(packet)
         }
         measuredFrameCount += 1
         if (measuredFrameCount % PERFORMANCE_LOG_INTERVAL == 0) {
@@ -1166,94 +1179,92 @@ class MainActivity : ComponentActivity() {
         lastMeasuredFrameStartedAt = frameStartedAt
     }
 
-    private fun toggleStreaming() {
-        if (publisher != null || localServer != null) {
-            val wifiPublisher = publisher
-            val usbServer = localServer
-            publisher = null
-            localServer = null
-            wifiPublisher?.stop()
-            usbServer?.stop()
-            linkState = null
-            linkDetail = null
-            notice = null
-            render()
-            return
+    /** Wait for computers on every network the phone may use (docs/protocol.md, version 2). */
+    private fun startServer() {
+        if (server != null) return
+        val next = FrameServer(allowedComputers, phoneDescription, serverEvents) { keyFrameWanted.set(true) }
+        try {
+            next.start()
+            server = next
+            serverProblem = null
+            multicastLock = (applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager)
+                ?.createMulticastLock("LumaLink discovery")
+                ?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not wait for computers", error)
+            serverProblem = t("serverFailed", error.localizedMessage)
         }
-        if (!cameraReady) return
-        linkState = null
-        linkDetail = null
-        notice = null
-        if (modeControl.value == MODE_USB) startUsbStream() else startWifiStream()
         render()
     }
 
-    /** Apply a link event from [source]; events from a stream already replaced are ignored. */
-    private fun onLinkEvent(source: Any, event: LinkEvent, detail: String?) {
-        if (source !== publisher && source !== localServer) return
-        when (event) {
-            LinkEvent.STOPPED -> linkState = null
-            LinkEvent.FAILED, LinkEvent.NOT_FOUND, LinkEvent.NO_ANSWER -> {
-                linkState = event
-                linkDetail = detail
-                if (source === publisher) publisher = null
-                if (source === localServer) localServer = null
-            }
-            else -> {
-                linkState = event
-                linkDetail = detail
-            }
-        }
-        notice = null
-        render()
+    private fun stopServer() {
+        val running = server ?: return
+        server = null
+        running.stop()
+        multicastLock?.release()
+        multicastLock = null
+        askDialog?.dismiss()
+        askDialog = null
+        connected = null
     }
 
-    private fun startUsbStream() {
-        lateinit var server: UsbFrameServer
-        server = UsbFrameServer(
-            onStatus = { event, detail -> runOnUiThread { onLinkEvent(server, event, detail) } },
-            onControl = { command ->
-                runOnUiThread { applyCameraControl(command) }
-            },
-            onKeyFrameNeeded = { keyFrameWanted.set(true) },
-        )
-        localServer = server
-        try {
-            server.start()
-        } catch (error: Exception) {
-            Log.e(TAG, "Could not start USB camera stream", error)
-            localServer = null
-            notice = t("usbFailed", error.localizedMessage)
+    private val phoneDescription = object : FrameServer.Phone {
+        override val id: String by lazy { PhoneId.get(preferences) }
+        override val name: String by lazy {
+            Settings.Global.getString(contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
+                ?: Build.MODEL
         }
+        override val version: String by lazy { installedVersion() ?: "0" }
+
+        override fun lenses(): JSONObject = lensesSnapshot
+
+        override fun settings(): JSONObject = settingsSnapshot
     }
 
-    private fun startWifiStream() {
-        val host = hostInput.text.toString().trim().ifEmpty { null }
-        if (host != null) {
-            try {
-                InetAddress.getByName(host)
-            } catch (error: Exception) {
-                notice = t("badHost")
-                return
+    private val serverEvents = object : FrameServer.Events {
+        override fun streaming(computer: Computer?) {
+            runOnUiThread {
+                connected = computer
+                notice = null
+                render()
             }
         }
-        lateinit var activePublisher: H264Publisher
-        activePublisher = H264Publisher(
-            host,
-            onStatus = { event, detail -> runOnUiThread { onLinkEvent(activePublisher, event, detail) } },
-            onControl = { command ->
-                runOnUiThread { applyCameraControl(command) }
-            },
-            onKeyFrameNeeded = { keyFrameWanted.set(true) },
-        )
-        publisher = activePublisher
-        try {
-            activePublisher.start()
-        } catch (error: Exception) {
-            Log.e(TAG, "Could not start camera publisher", error)
-            activePublisher.stop()
-            publisher = null
-            notice = t("startFailed", error.localizedMessage)
+
+        override fun askToAllow(id: String, name: String, answer: (Boolean) -> Unit) {
+            runOnUiThread {
+                askDialog?.dismiss()
+                askingId = id
+                askDialog = AlertDialog.Builder(this@MainActivity)
+                    .setTitle(t("allowTitle"))
+                    .setMessage(t("allowMessage", name))
+                    .setPositiveButton(t("allow")) { _, _ -> answer(true) }
+                    .setNegativeButton(t("deny")) { _, _ -> answer(false) }
+                    .setOnCancelListener { answer(false) }
+                    .show()
+            }
+        }
+
+        override fun askingCancelled(id: String) {
+            runOnUiThread {
+                if (askingId == id) {
+                    askDialog?.dismiss()
+                    askDialog = null
+                }
+            }
+        }
+
+        override fun oldStudioFound() {
+            runOnUiThread {
+                oldStudioSeenAt = SystemClock.elapsedRealtime()
+                render()
+            }
+        }
+
+        override fun control(command: JSONObject) {
+            runOnUiThread { applyCameraControl(command) }
         }
     }
 
@@ -1265,8 +1276,18 @@ class MainActivity : ComponentActivity() {
         private const val EXTRA_HELD_ROTATION = "held_rotation"
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
-        private const val MODE_USB = "USB"
-        private const val MODE_WIFI = "Wi-Fi"
+        private const val OLD_STUDIO_HINT_MS = 15_000L
+        private val DEFAULT_SETTINGS = JSONObject()
+            .put("autofocus", true)
+            .put("focus", 0.5)
+            .put("exposure", 0.0)
+            .put("iso", "Авто")
+            .put("whiteBalance", "Авто")
+            .put("lens", "Задняя")
+            .put("zoom", 1.0)
+            .put("fps", DEFAULT_FPS)
+            .put("resolution", DEFAULT_RESOLUTION)
+            .toString()
         private const val PREFERENCES = "settings"
         private const val KEY_LANGUAGE = "language"
         private const val KEY_KEEP_AWAKE = "keep_awake"
