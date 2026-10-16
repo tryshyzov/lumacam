@@ -79,8 +79,10 @@ To install the APK built locally and launch it:
 
 ```powershell
 adb install -r android-app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -n com.lumalink.companion/.MainActivity
+adb shell am start -n com.lumalink.companion.test/com.lumalink.companion.MainActivity
 ```
+
+Debug builds, and the APKs CI builds for pull requests, are a separate app, **LumaLink Test** (`com.lumalink.companion.test`), installed next to the released **LumaLink Companion**. They never update themselves; releases do.
 
 1. Keep the phone connected and open **LumaLink Companion**.
 2. For **USB**, connect the cable and enable **USB tethering** (USB-модем) in the phone's hotspot settings. Select **USB** in the phone app, tap **Начать трансляцию**, then select USB in LumaLink Studio and click **Подключить камеру**. The desktop broadcasts a discovery probe (UDP 8766) on its network adapters, the phone answers only on its USB-tethering interface, and the desktop opens the stream to the phone on TCP 8765. While tethering is on, Windows may route internet traffic through the phone's mobile data.

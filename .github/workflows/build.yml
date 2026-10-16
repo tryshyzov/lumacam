@@ -174,20 +174,26 @@ jobs:
         run: |
           chmod +x gradlew
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # The app users get, which updates itself to later releases.
             export LUMALINK_VERSION_NAME="${GITHUB_REF_NAME#v}"
-          fi
-          if [ -n "$LUMALINK_KEYSTORE_FILE" ]; then
             ./gradlew :app:assembleRelease --no-daemon
             cp android-app/build/outputs/apk/release/app-release.apk LumaLinkCompanion.apk
           else
-            ./gradlew :app:assembleDebug --no-daemon
-            cp android-app/build/outputs/apk/debug/app-debug.apk LumaLinkCompanion-debug.apk
+            # Everything else is "LumaLink Test", a separate app next to it.
+            export LUMALINK_TEST_BUILD=1
+            if [ -n "$LUMALINK_KEYSTORE_FILE" ]; then
+              ./gradlew :app:assembleRelease --no-daemon
+              cp android-app/build/outputs/apk/release/app-release.apk LumaLinkTest.apk
+            else
+              ./gradlew :app:assembleDebug --no-daemon
+              cp android-app/build/outputs/apk/debug/app-debug.apk LumaLinkTest-debug.apk
+            fi
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: LumaLinkCompanion-android
-          path: LumaLinkCompanion*.apk
+          path: LumaLink*.apk
           if-no-files-found: error
 
   release:

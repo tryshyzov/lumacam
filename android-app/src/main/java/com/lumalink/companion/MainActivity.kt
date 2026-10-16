@@ -1,7 +1,6 @@
 package com.lumalink.companion
 
 import android.Manifest
-import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -137,14 +136,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // For comparing the two paths on one phone:
-        // adb shell am start -n com.lumalink.companion/.MainActivity --ez force_copy true
+        // adb shell am start -n com.lumalink.companion.test/com.lumalink.companion.MainActivity --ez force_copy true
         gpuFailed = intent.getBooleanExtra(EXTRA_FORCE_COPY, false)
         // For checking every orientation on a phone lying flat, where the
         // sensor keeps it: --ei held_rotation 0..3 (a Surface.ROTATION_*).
         heldRotation = intent.getIntExtra(EXTRA_HELD_ROTATION, heldRotation).takeIf { it in 0..3 } ?: heldRotation
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
-        // Debug builds are signed with another key and cannot take a release over them.
-        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
+        // Test builds are a separate app and never take a release over them.
+        if (BuildConfig.UPDATES) {
             updater = AppUpdater(this, installedVersion() ?: "0") { render() }
         }
         buildScreen()
@@ -487,7 +486,7 @@ class MainActivity : ComponentActivity() {
 
         settingsPanel.addView(
             label(12f, Palette.TEXT_SECONDARY).apply {
-                text = "LumaLink Companion ${installedVersion() ?: ""}".trim()
+                text = "${getString(R.string.app_name)} ${installedVersion() ?: ""}".trim()
             },
             matchWidth(14),
         )
