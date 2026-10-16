@@ -1,13 +1,16 @@
 package com.lumalink.companion
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.InputType
 import android.util.Log
 import android.util.Range
@@ -144,7 +147,10 @@ class MainActivity : ComponentActivity() {
         language = preferences.getString(KEY_LANGUAGE, "ru")?.takeIf { it in Strings.languages } ?: "ru"
         // Test builds are a separate app and never take a release over them.
         if (BuildConfig.UPDATES) {
-            updater = AppUpdater(this, installedVersion() ?: "0") { render() }
+            updater = AppUpdater(this, installedVersion() ?: "0") { state ->
+                if (state is UpdateState.NeedsPermission) askToInstallUpdates()
+                render()
+            }
         }
         buildScreen()
         updater?.check()
@@ -160,6 +166,22 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (orientationListener.canDetectOrientation()) orientationListener.enable()
+        // Back from Settings with the permission: install what was downloaded.
+        val waiting = updater?.state as? UpdateState.NeedsPermission
+        if (waiting != null && packageManager.canRequestPackageInstalls() && !streaming()) {
+            updater?.install(waiting.release)
+        }
+    }
+
+    /** Open this app's "Install unknown apps" switch in Settings. */
+    private fun askToInstallUpdates() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
+            )
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not open the install permission screen", error)
+        }
     }
 
     override fun onPause() {
@@ -522,6 +544,7 @@ class MainActivity : ComponentActivity() {
         when (val state = updater?.state) {
             is UpdateState.Available -> state.release
             is UpdateState.Failed -> state.release
+            is UpdateState.NeedsPermission -> state.release
             else -> null
         }
 
@@ -543,6 +566,7 @@ class MainActivity : ComponentActivity() {
             is UpdateState.Available -> t("updateAvailable", state.release.version) to t("updateNow")
             is UpdateState.Downloading -> t("updateDownloading", state.release.version, state.percent) to null
             is UpdateState.Installing -> t("updateInstalling", state.release.version) to null
+            is UpdateState.NeedsPermission -> t("updatePermission") to t("updateAllow")
             is UpdateState.Failed -> when {
                 state.release == null -> t("updateCheckFailed") to t("updateRetry")
                 state.reason == AppUpdater.SIGNATURE_MISMATCH -> t("updateSignature") to null
@@ -560,6 +584,7 @@ class MainActivity : ComponentActivity() {
         updateButton.visibility = if (action == null) View.GONE else View.VISIBLE
         // The banner carries only news: an offer, its progress, or why it failed.
         val news = state is UpdateState.Available || state is UpdateState.Downloading ||
+            state is UpdateState.NeedsPermission ||
             state is UpdateState.Installing || (state is UpdateState.Failed && state.release != null)
         updateBanner.visibility = if (news && !streaming) View.VISIBLE else View.GONE
         updateBannerText.text = text
