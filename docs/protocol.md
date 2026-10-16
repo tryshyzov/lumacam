@@ -285,8 +285,10 @@ connecting to Studio) is gone from the phone.
 
 ### On the computer
 
-- Version 2 Studio keeps answering `LUMALINK-FIND-STUDIO-1` and accepting
-  `POST /publish` on TCP 8765, so version 1 phones still connect over Wi-Fi.
+- Version 2 Studio still finds version 1 phones over USB (it sends
+  `LUMALINK-DISCOVER-1` too and connects with `LUMAAVC1`), listed without a
+  name. It no longer listens for version 1 phones over Wi-Fi: those show
+  their in-app update first, and connect once updated.
 - It lists every phone found, once per link ("Redmi Note 9 Pro · USB",
   "… · Wi-Fi"), and connects by itself to the phone the user chose last (its
   `id`), preferring USB when the same phone is on both. With no phone chosen
