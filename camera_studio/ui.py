@@ -466,7 +466,7 @@ class MainWindow(QWidget):
         scroll = QScrollArea(panel)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        content = QWidget(scroll)
+        content = _PanelContent(scroll)
         content.setObjectName("panelContent")
         content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         groups = QVBoxLayout(content)
@@ -1443,6 +1443,30 @@ class MainWindow(QWidget):
             self.finder = None
         self._disconnect()
         super().closeEvent(event)
+
+
+class _PanelContent(QWidget):
+    """The settings panel's content, which scrolls instead of shrinking.
+
+    Its layout reports a minimum height that counts the wrapped hints at
+    another width, so in a short window the scroll area squeezed the
+    segmented controls and the selects below their height; this minimum is
+    the layout's height at the panel's actual width.
+    """
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth() and self.width() > 0:
+            return QSize(hint.width(), max(hint.height(), layout.totalHeightForWidth(self.width())))
+        if layout is not None:
+            return QSize(hint.width(), max(hint.height(), layout.sizeHint().height()))
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()  # the minimum above depends on the width
 
 
 def update_checks_enabled() -> bool:
