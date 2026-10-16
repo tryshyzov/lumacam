@@ -1,6 +1,7 @@
 package com.lumalink.companion
 
 import android.graphics.ImageFormat
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.util.Size
 import androidx.annotation.OptIn
@@ -97,6 +98,35 @@ internal object CameraModules {
         }
         return ZoomPlan.of(mainModule, others)
     }
+
+    /**
+     * The steady rates among 30 and 60 fps that [info] delivers at
+     * [resolution] (docs/protocol.md, `lenses.<lens>.fps`): the camera must
+     * offer a range up to that rate, and a stream at least that large must
+     * be fast enough for it. Phones often list 60 only for smaller sizes.
+     */
+    fun frameRates(info: CameraInfo, resolution: Size): List<Int> {
+        val camera = Camera2CameraInfo.from(info)
+        val ranges = camera.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            .orEmpty()
+        val map = camera.getCameraCharacteristic(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val longSide = maxOf(resolution.width, resolution.height)
+        val shortSide = minOf(resolution.width, resolution.height)
+        val sizes = map?.getOutputSizes(SurfaceTexture::class.java).orEmpty().filter {
+            maxOf(it.width, it.height) >= longSide && minOf(it.width, it.height) >= shortSide
+        }
+        return listOf(30, 60).filter { rate ->
+            ranges.any { it.upper == rate } && (
+                map == null || sizes.any { size ->
+                    val duration = map.getOutputMinFrameDuration(SurfaceTexture::class.java, size)
+                    duration == 0L || duration <= 1_000_000_000L / rate + FRAME_DURATION_SLACK_NS
+                }
+            )
+        }.ifEmpty { listOf(30) }
+    }
+
+    // Cameras round frame durations; 16.67 ms listed as 16.7 still makes 60 fps.
+    private const val FRAME_DURATION_SLACK_NS = 200_000L
 
     /** A selector for exactly [module]. */
     fun selector(lensFacing: Int, module: CameraModule): CameraSelector =

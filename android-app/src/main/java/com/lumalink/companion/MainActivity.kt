@@ -124,6 +124,13 @@ class MainActivity : ComponentActivity() {
     private var lastMeasuredFrameStartedAt = 0L
     private var measuredFrameCount = 0
 
+    // Frames sent per second, counted on the camera threads and shown under
+    // the picture while streaming, so a missing 60 fps is visible on the phone.
+    private var rateWindowStartedAt = 0L
+    private var rateWindowFrames = 0
+    @Volatile private var deliveredFps = 0
+    private var lastRateLogAt = 0L
+
     /** A camera problem that keeps the phone from streaming at all. */
     private var cameraProblem: String? = null
 
@@ -647,7 +654,8 @@ class MainActivity : ComponentActivity() {
             oldStudio -> t("oldStudio")
             else -> t("hintWaiting")
         }
-        lensTag.text = t(if (lensFacing == CameraSelector.LENS_FACING_FRONT) "front" else "rear")
+        val lens = t(if (lensFacing == CameraSelector.LENS_FACING_FRONT) "front" else "rear")
+        lensTag.text = if (computer != null && deliveredFps > 0) t("lensRate", lens, deliveredFps) else lens
 
         // The stream stops when the screen turns off, so keep it on while streaming.
         if (streaming && keepAwakeToggle.isOn) {
@@ -697,6 +705,13 @@ class MainActivity : ComponentActivity() {
         val selector = CameraModules.selector(lensFacing, module)
 
         val fpsRange = cameraFpsRange(selector, requestedFps)
+        val rates = selector.filter(provider.availableCameraInfos).firstOrNull()
+            ?.let { CameraModules.frameRates(it, analysisSize(requestedResolution)) }
+        Log.i(
+            TAG,
+            "Camera ${module.id}: range $fpsRange for $requestedFps fps at $requestedResolution; " +
+                "steady rates there: $rates",
+        )
         val previewBuilder = Preview.Builder()
             .setTargetResolution(Size(640, 480))
             .setTargetFrameRate(fpsRange)
@@ -895,7 +910,7 @@ class MainActivity : ComponentActivity() {
             for (key in command.keys()) cameraSettings.put(key, command.get(key))
             settingsSnapshot = JSONObject(cameraSettings.toString())
             val resolution = command.optString("resolution", requestedResolution)
-                .takeIf { it in setOf("480p", "720p", "1080p") }
+                .takeIf { it in RESOLUTIONS }
                 ?: requestedResolution
             val fps = command.optInt("fps", requestedFps).coerceIn(15, 60)
             val facing = if (command.optString("lens", "Задняя") == "Фронтальная") {
@@ -1063,6 +1078,25 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Each lens's zoom range, for discovery and the handshake. */
+    /** Keep [deliveredFps] up to date; log it every few seconds against what was asked. */
+    private fun countDeliveredFrame(now: Long) {
+        rateWindowFrames += 1
+        if (rateWindowStartedAt == 0L) rateWindowStartedAt = now
+        val elapsed = now - rateWindowStartedAt
+        if (elapsed < 1_000_000_000L) return
+        val rate = Math.round(rateWindowFrames * 1_000_000_000.0 / elapsed).toInt()
+        rateWindowFrames = 0
+        rateWindowStartedAt = now
+        if (now - lastRateLogAt >= RATE_LOG_INTERVAL_NS) {
+            lastRateLogAt = now
+            Log.i(TAG, "Sending $rate fps (asked for $requestedFps at $requestedResolution)")
+        }
+        if (rate != deliveredFps) {
+            deliveredFps = rate
+            runOnUiThread { render() }
+        }
+    }
+
     private fun updateLenses(provider: ProcessCameraProvider) {
         val lenses = JSONObject()
         val size = analysisSize(requestedResolution)
@@ -1071,7 +1105,19 @@ class MainActivity : ComponentActivity() {
             "Фронтальная" to CameraSelector.LENS_FACING_FRONT,
         )) {
             val range = CameraModules.plan(provider.availableCameraInfos, facing, size)?.range ?: continue
-            lenses.put(token, JSONObject().put("zoom", JSONArray().put(round2(range.start)).put(round2(range.endInclusive))))
+            val main = provider.availableCameraInfos.first { it.lensFacing == facing }
+            lenses.put(
+                token,
+                JSONObject()
+                    .put("zoom", JSONArray().put(round2(range.start)).put(round2(range.endInclusive)))
+                    // Every resolution at once: discovery and "ok" are not sent
+                    // again when the computer switches resolution.
+                    .put("fps", JSONObject().apply {
+                        for (resolution in RESOLUTIONS) {
+                            put(resolution, JSONArray(CameraModules.frameRates(main, analysisSize(resolution))))
+                        }
+                    }),
+            )
         }
         lensesSnapshot = lenses
     }
@@ -1167,6 +1213,7 @@ class MainActivity : ComponentActivity() {
             server?.publishFrame(packet)
         }
         measuredFrameCount += 1
+        countDeliveredFrame(frameStartedAt)
         if (measuredFrameCount % PERFORMANCE_LOG_INTERVAL == 0) {
             val processingMs =
                 (SystemClock.elapsedRealtimeNanos() - frameStartedAt) / 1_000_000
@@ -1230,6 +1277,11 @@ class MainActivity : ComponentActivity() {
         override fun streaming(computer: Computer?) {
             runOnUiThread {
                 connected = computer
+                if (computer == null) {
+                    deliveredFps = 0
+                    rateWindowStartedAt = 0L
+                    rateWindowFrames = 0
+                }
                 notice = null
                 render()
             }
@@ -1279,6 +1331,8 @@ class MainActivity : ComponentActivity() {
         private const val DEFAULT_FPS = 30
         private const val DEFAULT_RESOLUTION = "720p"
         private const val OLD_STUDIO_HINT_MS = 15_000L
+        private const val RATE_LOG_INTERVAL_NS = 5_000_000_000L
+        private val RESOLUTIONS = listOf("480p", "720p", "1080p")
         private val DEFAULT_SETTINGS = JSONObject()
             .put("autofocus", true)
             .put("focus", 0.5)
