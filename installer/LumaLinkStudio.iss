@@ -61,8 +61,11 @@ Name: "{autodesktop}\LumaLink Studio"; Filename: "{app}\LumaLinkStudio.exe"; \
 [Run]
 Filename: "{app}\LumaLinkStudio.exe"; Description: "Launch LumaLink Studio"; \
     Flags: postinstall nowait skipifsilent runasoriginaluser
-; An update started from the app (camera_studio/updates.py) starts it again.
-Filename: "{app}\LumaLinkStudio.exe"; Flags: nowait runasoriginaluser; Check: Relaunching
+; An update started from the app (camera_studio/updates.py) starts it again,
+; through Explorer: Setup carries the old app's environment, whose PyInstaller
+; variables would send the new version looking for the old one's unpacked files.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\LumaLinkStudio.exe"""; \
+    Flags: nowait runasoriginaluser; Check: Relaunching
 
 [Code]
 const

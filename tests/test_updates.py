@@ -1,9 +1,11 @@
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from camera_studio import updates
 
@@ -130,6 +132,20 @@ class WindowsInstallTests(unittest.TestCase):
         self.assertEqual(Path(file), Path("C:/Temp/Setup.exe"))
         for switch in ("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCLOSEAPPLICATIONS", "/RELAUNCH"):
             self.assertIn(switch, parameters.split())
+
+    def test_setup_does_not_inherit_the_bundle_environment(self) -> None:
+        seen = {}
+
+        def shell_execute(*arguments):
+            seen.update(os.environ)
+            return 42
+
+        bundle = {"_PYI_APPLICATION_HOME_DIR": "C:/Temp/_MEI1", "_PYI_PARENT_PROCESS_LEVEL": "1"}
+        with mock.patch.dict(os.environ, bundle):
+            updates.install_windows(Path("Setup.exe"), shell_execute)
+
+        self.assertFalse([name for name in seen if name.startswith("_PYI_")])
+        self.assertEqual(seen.get("PYINSTALLER_RESET_ENVIRONMENT"), "1")
 
     def test_keeps_running_when_the_administrator_prompt_is_declined(self) -> None:
         # ShellExecuteW answers SE_ERR_ACCESSDENIED (5) when the user says no.
