@@ -9,12 +9,21 @@ fun environment(name: String): String? = System.getenv(name)?.takeIf { it.isNotB
 
 val releaseKeystore = environment("LUMALINK_KEYSTORE_FILE")
 
+// Our own builds (CI for pull requests and branches, and every debug build)
+// are a separate app, "LumaLink Test", installed next to the one users get.
+// Its version codes run ahead of the releases, so as the same app it would
+// block updating to them; it never updates itself either.
+val testBuild = environment("LUMALINK_TEST_BUILD") == "1"
+
 android {
     namespace = "com.lumalink.companion"
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.lumalink.companion"
+        if (testBuild) applicationIdSuffix = ".test"
+        resValue("string", "app_name", if (testBuild) "LumaLink Test" else "LumaLink Companion")
+        buildConfigField("boolean", "UPDATES", (!testBuild).toString())
         minSdk = 26
         targetSdk = 35
         versionCode = environment("LUMALINK_VERSION_CODE")?.toIntOrNull() ?: 1
@@ -32,7 +41,16 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
+        debug {
+            if (!testBuild) applicationIdSuffix = ".test"
+            resValue("string", "app_name", "LumaLink Test")
+            buildConfigField("boolean", "UPDATES", "false")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")

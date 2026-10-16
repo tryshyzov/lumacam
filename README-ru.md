@@ -60,8 +60,10 @@ scripts/build-macos.sh
 
 ```powershell
 adb install -r android-app\build\outputs\apk\debug\app-debug.apk
-adb shell am start -n com.lumalink.companion/.MainActivity
+adb shell am start -n com.lumalink.companion.test/com.lumalink.companion.MainActivity
 ```
+
+Отладочные сборки и APK, которые CI собирает для pull request, — отдельное приложение **LumaLink Test** (`com.lumalink.companion.test`), оно ставится рядом с релизным **LumaLink Companion**. Сами они не обновляются, обновляются релизы.
 
 1. Найдите **LumaLink Companion** на телефоне и откройте.
 2. Для **USB**, подключите кабель и включите на телефоне **USB-модем** (Точка доступа и модем). Выберите **USB** в приложении на телефоне и нажмите **Начать трансляцию**, затем выберите USB в **LumaLink Studio** и нажмите **Подключить камеру**. Компьютер сам найдёт телефон в сети USB-модема. Пока модем включён, Windows может направлять интернет через мобильные данные телефона.
