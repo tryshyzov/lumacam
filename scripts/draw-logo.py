@@ -125,6 +125,8 @@ class Wordmark:
 
     TEXT = ["l", "u", "m", "a", "l", "dotlessi", "n", "k"]
     TRACKING = -0.03  # em
+    DOT_HEIGHT = 0.75  # the dot's centre above the baseline, em
+    DOT_RADIUS = 0.15  # em
 
     def __init__(self, font_path: Path) -> None:
         font = TTFont(font_path)
@@ -151,13 +153,12 @@ class Wordmark:
             transform = (scale, 0, 0, -scale, x + cursor * scale, baseline)
             self.glyphs[name].draw(TransformPen(pen, transform))
             if name == "dotlessi":
-                # Where the i's own dot sits: above the dotless i's stem.
-                _, _, _, stem_top = self._bounds(name)
-                left, _, right, top = self._bounds(self.glyph_i)
-                center_x = x + (cursor + (left + right) / 2) * scale
-                center_y = baseline - (stem_top + top) / 2 * scale
-                radius = (top - stem_top) * scale * 0.62
-                dot = (center_x, center_y, radius)
+                # As on the logo board: a hexagon 0.3 em tall, centred over
+                # the letter, 0.75 em above the baseline, which leaves a
+                # small gap above the stem.
+                advance = self.glyphs[name].width + self.TRACKING * self.em
+                center_x = x + (cursor + advance / 2) * scale
+                dot = (center_x, baseline - self.DOT_HEIGHT * size, self.DOT_RADIUS * size)
             cursor += self.glyphs[name].width + self.TRACKING * self.em
         width = (cursor - self.TRACKING * self.em) * scale
         return pen.getCommands(), dot, width
