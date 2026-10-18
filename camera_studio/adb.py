@@ -81,6 +81,12 @@ def find_adb() -> Path | None:
                 return executable
         return _bundled_macos_adb()
 
+    if sys.platform.startswith("linux"):
+        sdk = Path.home() / "Android" / "Sdk" / "platform-tools" / "adb"
+        if sdk.is_file():
+            return sdk
+        return _bundled_linux_adb()
+
     package_root = (
         Path.home() / "AppData" / "Local" / "Microsoft" / "WinGet" / "Packages"
     )
@@ -129,6 +135,28 @@ def _bundled_macos_adb() -> Path | None:
         root = Path(frozen_root)
     executable = root / "platform-tools" / "adb"
     return executable if executable.is_file() else None
+
+
+def _bundled_linux_adb() -> Path | None:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    root = Path(frozen_root) if frozen_root else Path(__file__).resolve().parents[1] / "vendor"
+    source = root / "platform-tools" / "adb"
+    if not source.is_file():
+        return None
+    if frozen_root is None:
+        return source
+    # The ADB server outlives the app, and an AppImage is unmounted when the
+    # app exits, so the server runs from a copy in the user's data folder.
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    target = data_home / "LumaLinkStudio" / "platform-tools" / "adb"
+    try:
+        if not target.is_file() or target.stat().st_size != source.stat().st_size:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            target.chmod(0o755)
+    except OSError:
+        return None
+    return target
 
 
 def _run_adb(adb: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

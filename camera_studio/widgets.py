@@ -59,7 +59,7 @@ ACCENT = "#ff5a3c"
 ACCENT_HOVER = "#ff7559"
 # macOS draws its own window buttons; Windows gets the prototype's ones.
 MACOS = sys.platform == "darwin"
-FONT_FAMILY = ".AppleSystemUIFont" if MACOS else "Segoe UI"
+FONT_FAMILY = ".AppleSystemUIFont" if MACOS else "Segoe UI" if sys.platform == "win32" else "sans-serif"
 
 ICON_PAUSE = (
     '<rect x="1" y="0.5" width="4.5" height="13" rx="1"/>'
