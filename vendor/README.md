@@ -2,7 +2,7 @@
 
 `platform-tools/` holds ADB from Google's Android SDK Platform-Tools (Apache
 License 2.0, see `platform-tools/NOTICE.txt`): `adb.exe` and its two DLLs on
-Windows, the universal (Apple silicon and Intel) `adb` on macOS. The folder is
+Windows, the universal (Apple silicon and Intel) `adb` on macOS, the x86-64 `adb` on Linux (CI downloads it; `LumaLinkStudio-linux.spec` bundles it when present). The folder is
 not committed; fill it before building the desktop app:
 
 ```powershell

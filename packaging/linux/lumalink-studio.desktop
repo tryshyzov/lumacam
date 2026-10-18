@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LumaLink Studio
+Comment=An Android phone's camera as a webcam
+Comment[ru]=Камера Android-телефона как веб-камера
+Exec=lumalink-studio
+Icon=lumalink-studio
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=webcam;camera;phone;android;
+StartupWMClass=LumaLinkStudio

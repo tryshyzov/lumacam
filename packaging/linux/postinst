@@ -1,0 +1,14 @@
+#!/bin/sh
+# Create LumaLink Camera now, so it works without a restart. When another
+# program (OBS) has already loaded v4l2loopback, keep its devices: LumaLink
+# Studio uses one of them, and the camera gets its name at the next boot.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! grep -q '^v4l2loopback ' /proc/modules 2>/dev/null; then
+        modprobe v4l2loopback 2>/dev/null || \
+            echo "LumaLink: could not load v4l2loopback now; LumaLink Camera appears after a restart." >&2
+    fi
+fi
+
+exit 0

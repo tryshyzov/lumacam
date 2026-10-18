@@ -65,6 +65,26 @@ scripts/build-macos.sh
 
 It writes `dist/LumaLink Studio.app` and `dist/LumaLinkStudio-<version>-macos-apple-silicon.dmg`, or `-intel.dmg` on an Intel Mac: the app runs on the processor it was built on, and CI builds both. The script downloads ADB into `vendor/platform-tools` first if it is missing; the app carries it, because on a Mac the USB connection usually goes through ADB (most phones' USB tethering has no macOS driver). With Xcode installed, the script also compiles `assets/LumaLinkStudio.icon` (an Icon Composer icon) so the icon follows the macOS light, dark, tinted and clear appearances; without it the app keeps the plain `.icns` icon. The app is signed ad hoc, not with a Developer ID, so on another Mac open it the first time with right-click → **Open**. On first launch macOS asks to let it find devices on local networks; allow it, or the phone cannot connect. The build also carries LumaLink Camera for macOS, a camera extension ([`macvirtualcam/`](./macvirtualcam/)), but macOS installs it only from an app signed by an Apple Developer Program team; until then the virtual camera on macOS goes through OBS Virtual Camera (OBS Studio 30+, started once from OBS).
 
+## Linux
+
+Releases carry `LumaLinkStudio-<version>-x86_64.AppImage`, which runs on any distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12 and later) and updates itself, and `lumalink-studio_<version>_amd64.deb` for Debian, Ubuntu and Mint, which installs from the menu as **LumaLink Studio**.
+
+The virtual camera on Linux is a v4l2loopback device. The .deb recommends `v4l2loopback-dkms`, so `sudo apt install ./lumalink-studio_<version>_amd64.deb` installs it, creates **LumaLink Camera** and loads it at every boot. With the AppImage, set it up once:
+
+```sh
+sudo apt install v4l2loopback-dkms        # or your distribution's v4l2loopback package
+sudo modprobe v4l2loopback card_label="LumaLink Camera" exclusive_caps=1
+```
+
+With Secure Boot on, the module must be signed: Ubuntu's DKMS asks to enroll its key at the next boot. ADB comes with the app; USB tethering works with the kernel's own driver.
+
+To build both packages on Linux, with Python 3.10+, `dpkg-deb` and network access (for `appimagetool`):
+
+```sh
+python3 -m pip install -r requirements.txt pyinstaller
+sh packaging/linux/build.sh <version>
+```
+
 ## Connect the Android camera
 
 The `android-app` module is a native Kotlin/CameraX companion. It previews the camera and streams hardware-encoded H.264 access units to the desktop without an access code. USB uses a length-prefixed binary protocol with per-frame acknowledgement and camera-control messages over the phone's USB-tethering network; Wi-Fi uses the same video/control framing over a TCP connection. USB debugging is needed only for the VPN fallback described below.
