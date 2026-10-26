@@ -198,3 +198,51 @@ class LookFilter:
         lut.link_to(sink)
         graph.configure()
         self._graph, self._look, self._shape = graph, look, shape
+
+
+class Overlay:
+    """A picture over the camera's, such as a frame or a logo: a PNG with
+    transparency, fitted into the picture with its proportions kept.
+
+    Frames arrive upside down, as the phone sends them (see
+    stream.correct_stream_orientation), so the picture is turned to match.
+    Only its visible pixels are blended, which keeps a logo or a thin frame
+    at a millisecond or two a 1080p frame.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        from PIL import Image
+
+        self.path = str(path)
+        self._image = Image.open(path).convert("RGBA")
+        self._prepared: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    def _prepare(self, width: int, height: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        from PIL import Image
+
+        prepared = self._prepared.get((width, height))
+        if prepared is not None:
+            return prepared
+        scale = min(width / self._image.width, height / self._image.height)
+        size = (max(1, round(self._image.width * scale)), max(1, round(self._image.height * scale)))
+        image = self._image.resize(size, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        canvas.alpha_composite(image, ((width - image.width) // 2, (height - image.height) // 2))
+        pixels = np.asarray(canvas.transpose(Image.Transpose.ROTATE_180), dtype=np.float32).reshape(-1, 4)
+        where = np.flatnonzero(pixels[:, 3] > 0)
+        alpha = pixels[where, 3:4] / 255
+        prepared = (where, pixels[where, :3] * alpha, 1 - alpha)
+        if len(self._prepared) > 4:
+            self._prepared.clear()
+        self._prepared[(width, height)] = prepared
+        return prepared
+
+    def apply(self, frame):
+        import av
+
+        rgb = frame.to_ndarray(format="rgb24") if frame.format.name != "rgb24" else frame.to_ndarray()
+        height, width = rgb.shape[:2]
+        where, colour, keep = self._prepare(width, height)
+        flat = rgb.reshape(-1, 3)
+        flat[where] = (flat[where] * keep + colour).astype(np.uint8)
+        return av.VideoFrame.from_ndarray(rgb, format="rgb24")

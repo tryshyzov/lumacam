@@ -93,3 +93,25 @@ class FilterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OverlayTests(unittest.TestCase):
+    def test_draws_the_picture_over_the_frame_turned_like_the_stream(self) -> None:
+        from camera_studio.look import Overlay
+
+        with tempfile.TemporaryDirectory() as folder:
+            logo = Image.new("RGBA", (16, 9), (0, 0, 0, 0))
+            logo.putpixel((0, 0), (255, 0, 0, 255))  # top left, once upright
+            path = Path(folder) / "logo.png"
+            logo.save(path)
+            frame = av.VideoFrame.from_image(Image.new("RGB", (64, 36), (0, 0, 255))).reformat(format="yuv420p")
+
+            out = Overlay(path).apply(frame).to_image()
+
+        # The stream is upside down, so the upright top left is bottom right.
+        upright = out.transpose(Image.Transpose.ROTATE_180)
+        r, g, b = upright.getpixel((1, 1))
+        self.assertGreater(r, 150)
+        self.assertLess(b, 100)
+        r, g, b = upright.getpixel((40, 20))
+        self.assertGreater(b, 150)

@@ -484,6 +484,26 @@ class MainWindowTests(unittest.TestCase):
         self.window._toggle_connection()
         self.assertEqual(len(FakePhoneReceiver.instances), 2)
 
+    def test_the_look_styles_frames_and_survives_a_restart(self) -> None:
+        window = self.window
+        window.look_select.setCurrentIndex(window.look_select.findData("mono"))
+        window.look_sliders["contrast"][0].setValue(30)
+        decoded = av.VideoFrame.from_image(Image.new("RGB", (64, 36), (200, 40, 40))).reformat(format="yuv420p")
+        for _ in range(2):
+            styled = window._styled(decoded)
+        r, g, b = styled.to_image().getpixel((32, 18))
+        self.assertLessEqual(max(r, g, b) - min(r, g, b), 3)
+        self.assertEqual(window.look_sliders["contrast"][1].text(), "+30")
+        window.settings.sync()
+
+        reopened = self.new_window()
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.look_select.currentData(), "mono")
+        self.assertEqual(reopened.look_sliders["contrast"][0].value(), 30)
+
+        reopened._reset_look()
+        self.assertTrue(reopened.current_look().neutral)
+
     def test_settings_survive_a_restart(self) -> None:
         self.window._select_language("en")
         self.window.mirror_switch.setChecked(True)

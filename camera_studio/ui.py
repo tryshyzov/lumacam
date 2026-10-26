@@ -18,6 +18,7 @@ from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,7 @@ from camera_studio.pause_frame import (
     paused_frame,
     transition_frame,
 )
+from camera_studio.look import PRESETS, Look, LookFilter, Overlay, combined, read_cube
 from camera_studio.phones import LINKS, Phone, PhoneFinder, frame_rates, zoom_range
 from camera_studio.stream import (
     H264Decoder,
@@ -213,6 +215,11 @@ class MainWindow(QWidget):
         self.wait_text = ""
         self.vpn_checked_at = -VPN_CHECK_INTERVAL
         self.finder: PhoneFinder | None = None
+        # The look and the picture over the camera's, applied to every frame
+        # on the network thread; the panel's "Образ" group sets them.
+        self.look_filter = LookFilter()
+        self.overlay: Overlay | None = None
+        self.look_lut: str | None = None
         self._devices_shown: tuple | None = None
         self.virtual_camera: VirtualCameraOutput | None = None
         self.virtual_camera_run = 0
@@ -447,6 +454,52 @@ class MainWindow(QWidget):
         layout.addWidget(holder)
         return holder, value
 
+    def _build_look_group(self, groups: QVBoxLayout) -> None:
+        """Colour correction and a picture over the camera's, for every app."""
+        look = self._group(groups, "look")
+        self.look_select = Select(self)
+        for key in PRESETS:
+            self.look_select.addItem("", key)
+        self.look_select.currentIndexChanged.connect(self._look_changed)
+        self._bind(self.look_select.setAccessibleName, "look_style")
+        self._labeled(look, "look_style", self.look_select)
+        self.look_sliders: dict[str, tuple[Slider, QLabel]] = {}
+        for key in ("brightness", "contrast", "saturation", "warmth"):
+            slider = Slider(-100, 100, 0, self)
+            slider.valueChanged.connect(self._look_changed)
+            low, high = ("look_cooler", "look_warmer") if key == "warmth" else ("look_less", "look_more")
+            _, value = self._slider_field(look, f"look_{key}", slider, low_key=low, high_key=high)
+            self.look_sliders[key] = (slider, value)
+        self.lut_label, self.lut_clear = self._file_row(look, "look_lut", self._pick_lut, self._clear_lut)
+        self.overlay_label, self.overlay_clear = self._file_row(
+            look, "look_overlay", self._pick_overlay, self._clear_overlay
+        )
+        self.look_reset_button = self._text_button("look_reset", self._reset_look)
+        look.addWidget(self.look_reset_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+    def _text_button(self, key: str, action: Callable[[], None]) -> QPushButton:
+        button = QPushButton(self)
+        button.setObjectName("textButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.clicked.connect(action)
+        self._bind(button.setText, key)
+        return button
+
+    def _file_row(
+        self, layout: QVBoxLayout, key: str, pick: Callable[[], None], clear: Callable[[], None]
+    ) -> tuple[QLabel, QPushButton]:
+        """A button that picks a file, its name, and one that removes it."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self._text_button(key, pick))
+        name = self._label(role="secondary")
+        row.addWidget(name, 1)
+        remove = self._text_button("look_remove", clear)
+        row.addWidget(remove)
+        layout.addLayout(row)
+        return name, remove
+
     def _labeled(self, layout: QVBoxLayout, key: str, widget: QWidget) -> None:
         field = QVBoxLayout()
         field.setSpacing(4)
@@ -545,6 +598,7 @@ class MainWindow(QWidget):
         self._bind(self.reset_button.setText, "reset")
         controls.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignLeft)
         groups.addWidget(self.controls)
+        self._build_look_group(groups)
         groups.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -703,11 +757,113 @@ class MainWindow(QWidget):
         self.info_switch.setChecked(self.settings.value("info", False, type=bool))
         self.mirror_switch.setChecked(self.settings.value("mirror", False, type=bool))
         self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
+        self._load_look()
         self._connect_settings()
 
     def _save_option(self, key: str, value: object) -> None:
         self.settings.setValue(key, value)
         self._refresh()
+
+    # ------------------------------------------------------------------ look
+
+    def _load_look(self) -> None:
+        preset = str(self.settings.value("look/preset", "none"))
+        index = self.look_select.findData(preset)
+        self.look_select.blockSignals(True)
+        self.look_select.setCurrentIndex(max(0, index))
+        self.look_select.blockSignals(False)
+        for key, (slider, _value) in self.look_sliders.items():
+            slider.blockSignals(True)
+            slider.setValue(int(self.settings.value(f"look/{key}", 0, type=int)))
+            slider.blockSignals(False)
+        lut = str(self.settings.value("look/lut", ""))
+        self.look_lut = lut if lut and Path(lut).is_file() else None
+        overlay = str(self.settings.value("look/overlay", ""))
+        if overlay and Path(overlay).is_file():
+            try:
+                self.overlay = Overlay(overlay)
+            except OSError:
+                self.overlay = None
+        self._look_changed()
+
+    def current_look(self) -> Look:
+        own = Look(
+            lut=self.look_lut,
+            **{key: slider.value() / 100 for key, (slider, _value) in self.look_sliders.items()},
+        )
+        return combined(str(self.look_select.currentData() or "none"), own)
+
+    def _look_changed(self, *_args: object) -> None:
+        self.look_filter.set_look(self.current_look())
+        for key, (slider, value) in self.look_sliders.items():
+            number = slider.value()
+            value.setText(f"+{number}" if number > 0 else "−" + str(-number) if number < 0 else "0")
+            self.settings.setValue(f"look/{key}", number)
+        self.settings.setValue("look/preset", self.look_select.currentData() or "none")
+        self.settings.setValue("look/lut", self.look_lut or "")
+        self.settings.setValue("look/overlay", self.overlay.path if self.overlay else "")
+        self._show_look_files()
+
+    def _show_look_files(self) -> None:
+        if not hasattr(self, "lut_label"):
+            return
+        for label, button, path in (
+            (self.lut_label, self.lut_clear, self.look_lut),
+            (self.overlay_label, self.overlay_clear, self.overlay.path if self.overlay else None),
+        ):
+            label.setText(Path(path).name if path else self.t("look_no_file"))
+            button.setVisible(path is not None)
+
+    def _pick_lut(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("look_lut"), "", "LUT (*.cube)")
+        if not path:
+            return
+        try:
+            read_cube(path)
+        except (OSError, ValueError) as error:
+            self.lut_label.setText(self.t("look_bad_file", error=error))
+            return
+        self.look_lut = path
+        self._look_changed()
+
+    def _clear_lut(self) -> None:
+        self.look_lut = None
+        self._look_changed()
+
+    def _pick_overlay(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("look_overlay"), "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            self.overlay = Overlay(path)
+        except OSError as error:
+            self.overlay_label.setText(self.t("look_bad_file", error=error))
+            return
+        self._look_changed()
+
+    def _clear_overlay(self) -> None:
+        self.overlay = None
+        self._look_changed()
+
+    def _reset_look(self) -> None:
+        self.look_select.setCurrentIndex(0)
+        for slider, _value in self.look_sliders.values():
+            slider.setValue(0)
+        self.look_lut = None
+        self.overlay = None
+        self._look_changed()
+
+    def _styled(self, decoded):
+        """The decoded frame with the look and the picture over it; as it was if they fail."""
+        try:
+            decoded = self.look_filter.apply(decoded)
+            overlay = self.overlay
+            if overlay is not None:
+                decoded = overlay.apply(decoded)
+        except Exception as error:  # a bad LUT must not stop the video
+            print(f"Look failed: {error}", file=sys.stderr)
+            self.look_filter.set_look(Look())
+        return decoded
 
     def _select_language(self, language: str) -> None:
         self.language = language
@@ -725,6 +881,9 @@ class MainWindow(QWidget):
         self.lens_seg.set_labels({"rear": self.t("rear"), "front": self.t("front")})
         for index, (key, _token) in enumerate(PHONE_WHITE_BALANCE):
             self.white_balance_select.setItemText(index, self.t(key))
+        for index, key in enumerate(PRESETS):
+            self.look_select.setItemText(index, self.t(f"look_{key}"))
+        self._show_look_files()
         for index, (resolution, fps, size) in enumerate(PROFILES):
             self.profile_actions[index].setText(
                 f"{resolution}, {fps} {self.t('fps_unit')}\t{size}"
@@ -1118,6 +1277,7 @@ class MainWindow(QWidget):
         if not self.streaming:
             return
         for decoded in self.decoder.decode(frame):
+            decoded = self._styled(decoded)
             image = correct_stream_orientation(decoded.to_image())
             virtual_camera = self.virtual_camera
             if self.paused:
