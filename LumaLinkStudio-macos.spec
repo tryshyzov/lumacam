@@ -14,6 +14,7 @@ a = Analysis(
     binaries=adb_binaries,
     datas=[
         ('assets/LumaCam.png', 'assets'),
+        ('assets/models', 'assets/models'),
         ('vendor/platform-tools/NOTICE.txt', 'platform-tools'),
     ],
     hiddenimports=[],

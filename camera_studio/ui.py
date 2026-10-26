@@ -40,6 +40,7 @@ from camera_studio.pause_frame import (
     paused_frame,
     transition_frame,
 )
+from camera_studio.effects import EffectSettings, Effects
 from camera_studio.look import PRESETS, Look, LookFilter, Overlay, combined, read_cube
 from camera_studio.phones import LINKS, Phone, PhoneFinder, frame_rates, zoom_range
 from camera_studio.stream import (
@@ -218,6 +219,8 @@ class MainWindow(QWidget):
         # The look and the picture over the camera's, applied to every frame
         # on the network thread; the panel's "Образ" group sets them.
         self.look_filter = LookFilter()
+        self.effects = Effects()
+        self.effect_image: str | None = None
         self.overlay: Overlay | None = None
         self.look_lut: str | None = None
         self._devices_shown: tuple | None = None
@@ -477,6 +480,26 @@ class MainWindow(QWidget):
         self.look_reset_button = self._text_button("look_reset", self._reset_look)
         look.addWidget(self.look_reset_button, 0, Qt.AlignmentFlag.AlignLeft)
 
+    def _build_effects_group(self, groups: QVBoxLayout) -> None:
+        """Background blur or a picture behind the person, and face framing."""
+        effects = self._group(groups, "effects")
+        self.background_select = Select(self)
+        for key in ("none", "blur", "image"):
+            self.background_select.addItem("", key)
+        self.background_select.currentIndexChanged.connect(self._effects_changed)
+        self._bind(self.background_select.setAccessibleName, "effects_background")
+        self._labeled(effects, "effects_background", self.background_select)
+        self.blur_slider = Slider(0, 100, 60, self)
+        self.blur_slider.valueChanged.connect(self._effects_changed)
+        self.blur_field, self.blur_value = self._slider_field(
+            effects, "effects_blur", self.blur_slider, low_key="look_less", high_key="look_more"
+        )
+        self.effect_image_label, self.effect_image_clear = self._file_row(
+            effects, "effects_image", self._pick_effect_image, self._clear_effect_image
+        )
+        self.framing_switch = self._switch_row(effects, "effects_framing")
+        self.framing_switch.toggled.connect(self._effects_changed)
+
     def _text_button(self, key: str, action: Callable[[], None]) -> QPushButton:
         button = QPushButton(self)
         button.setObjectName("textButton")
@@ -598,6 +621,7 @@ class MainWindow(QWidget):
         self._bind(self.reset_button.setText, "reset")
         controls.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignLeft)
         groups.addWidget(self.controls)
+        self._build_effects_group(groups)
         self._build_look_group(groups)
         groups.addStretch(1)
         scroll.setWidget(content)
@@ -758,6 +782,7 @@ class MainWindow(QWidget):
         self.mirror_switch.setChecked(self.settings.value("mirror", False, type=bool))
         self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
         self._load_look()
+        self._load_effects()
         self._connect_settings()
 
     def _save_option(self, key: str, value: object) -> None:
@@ -785,6 +810,54 @@ class MainWindow(QWidget):
             except OSError:
                 self.overlay = None
         self._look_changed()
+
+    def _load_effects(self) -> None:
+        for widget in (self.background_select, self.blur_slider, self.framing_switch):
+            widget.blockSignals(True)
+        index = self.background_select.findData(str(self.settings.value("effects/background", "none")))
+        self.background_select.setCurrentIndex(max(0, index))
+        self.blur_slider.setValue(int(self.settings.value("effects/blur", 60, type=int)))
+        self.framing_switch.setChecked(self.settings.value("effects/framing", False, type=bool))
+        image = str(self.settings.value("effects/image", ""))
+        self.effect_image = image if image and Path(image).is_file() else None
+        for widget in (self.background_select, self.blur_slider, self.framing_switch):
+            widget.blockSignals(False)
+        self._effects_changed()
+
+    def current_effects(self) -> EffectSettings:
+        return EffectSettings(
+            background=str(self.background_select.currentData() or "none"),
+            blur=self.blur_slider.value() / 100,
+            image=self.effect_image,
+            framing=self.framing_switch.isChecked(),
+        )
+
+    def _effects_changed(self, *_args: object) -> None:
+        settings = self.current_effects()
+        self.effects.configure(settings)
+        self.blur_field.setVisible(settings.background == "blur")
+        self.blur_value.setText(f"{self.blur_slider.value()}%")
+        self.settings.setValue("effects/background", settings.background)
+        self.settings.setValue("effects/blur", self.blur_slider.value())
+        self.settings.setValue("effects/framing", settings.framing)
+        self.settings.setValue("effects/image", self.effect_image or "")
+        if hasattr(self, "effect_image_label"):
+            self.effect_image_label.setText(Path(self.effect_image).name if self.effect_image else self.t("look_no_file"))
+            self.effect_image_clear.setVisible(self.effect_image is not None)
+
+    def _pick_effect_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("effects_image"), "", "Pictures (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        self.effect_image = path
+        self.background_select.setCurrentIndex(self.background_select.findData("image"))
+        self._effects_changed()
+
+    def _clear_effect_image(self) -> None:
+        self.effect_image = None
+        if self.background_select.currentData() == "image":
+            self.background_select.setCurrentIndex(0)
+        self._effects_changed()
 
     def current_look(self) -> Look:
         own = Look(
@@ -856,6 +929,11 @@ class MainWindow(QWidget):
     def _styled(self, decoded):
         """The decoded frame with the look and the picture over it; as it was if they fail."""
         try:
+            decoded = self.effects.apply(decoded)
+        except Exception as error:  # a model that fails must not stop the video
+            print(f"Effects failed: {error}", file=sys.stderr)
+            self.effects.configure(EffectSettings())
+        try:
             decoded = self.look_filter.apply(decoded)
             overlay = self.overlay
             if overlay is not None:
@@ -883,6 +961,8 @@ class MainWindow(QWidget):
             self.white_balance_select.setItemText(index, self.t(key))
         for index, key in enumerate(PRESETS):
             self.look_select.setItemText(index, self.t(f"look_{key}"))
+        for index, key in enumerate(("none", "blur", "image")):
+            self.background_select.setItemText(index, self.t(f"effects_{key}"))
         self._show_look_files()
         for index, (resolution, fps, size) in enumerate(PROFILES):
             self.profile_actions[index].setText(
