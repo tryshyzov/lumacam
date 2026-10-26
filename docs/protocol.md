@@ -229,6 +229,7 @@ LUMALINK-CAMERA-2 <json>
 | `name` | What to show in the device list: the device name the user set, or the model |
 | `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (the phone's Wi-Fi network) |
 | `version` | The phone app's version |
+| `photo` | `true` when the phone takes photos on request (see "Photos") |
 | `tls` | `true` when Wi-Fi connections must use TLS (see "Encrypted Wi-Fi") |
 | `lenses` | For each lens token of the camera settings, the zoom range the phone offers (`zoom`) and the frame rates it can really deliver (`fps`, see below) |
 
@@ -362,6 +363,26 @@ unsigned integer, modulo 1 000 000, written with six digits as "123 456".
 A computer that does not know `"tls"` (Studio 0.6) cannot connect to such a
 phone over Wi-Fi, only over USB; Studio 0.7 still connects to 0.6 phones,
 which do not announce it, without encryption, and says so.
+
+### Photos (phone app 0.7 and later)
+
+A phone that announces `"photo": true` in its description takes a full
+resolution photo on request. The computer adds `"photo": <number>` to the
+camera settings, a number it has not used on this connection before; a
+phone ignores the key otherwise, so the other settings are sent as always.
+
+The phone answers, between two frames, with a photo message instead of a
+frame:
+
+```
+length   u32      0x80000000 | number of bytes that follow, at most 32 000 000
+data     bytes    the photo as JPEG, upright as the phone is held; empty if the photo failed
+```
+
+The highest bit tells it from a frame, whose length never has it. The
+computer acknowledges it like a frame. While the phone takes the photo the
+video may stop for a moment: the Android app adds the photo output to the
+camera only for that photo, so the video keeps its frame rate otherwise.
 
 ### On the computer
 

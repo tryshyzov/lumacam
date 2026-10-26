@@ -52,6 +52,7 @@ class Phone:
     version: str | None = None  # None: a version 1 phone
     lenses: dict = field(default_factory=dict, compare=False, hash=False)
     tls: bool = False  # Wi-Fi connections go inside TLS ("Encrypted Wi-Fi")
+    photo: bool = False  # takes full resolution photos on request ("Photos")
 
     @property
     def key(self) -> str:
@@ -86,6 +87,7 @@ def parse_reply(reply: bytes, sender: str) -> Phone | None:
         version=str(info.get("version") or "2"),
         lenses=lenses,
         tls=info.get("tls") is True,
+        photo=info.get("photo") is True,
     )
 
 

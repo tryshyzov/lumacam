@@ -65,6 +65,10 @@ ICON_PAUSE = (
     '<rect x="1" y="0.5" width="4.5" height="13" rx="1"/>'
     '<rect x="8.5" y="0.5" width="4.5" height="13" rx="1"/>'
 )
+ICON_PHOTO = (
+    '<path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/>'
+    '<circle cx="12" cy="13" r="4"/>'
+)
 ICON_PLAY = '<path d="M3 1.2v11.6a.5.5 0 0 0 .77.42l9-5.8a.5.5 0 0 0 0-.84l-9-5.8A.5.5 0 0 0 3 1.2z"/>'
 ICON_GEAR = (
     '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08'
