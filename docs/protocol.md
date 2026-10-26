@@ -376,7 +376,7 @@ frame:
 
 ```
 length   u32      0x80000000 | number of bytes that follow, at most 32 000 000
-data     bytes    the photo as JPEG, upright as the phone is held; empty if the photo failed
+data     bytes    the photo as JPEG, its turn for the way the phone is held in EXIF; empty if the photo failed
 ```
 
 The highest bit tells it from a frame, whose length never has it. The

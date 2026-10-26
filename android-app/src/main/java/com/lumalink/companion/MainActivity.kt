@@ -38,6 +38,8 @@ import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
@@ -100,6 +102,14 @@ class MainActivity : ComponentActivity() {
     private var videoEncoder: H264Encoder? = null
     private var gpuCameraPipeline: GpuCameraPipeline? = null
     private var gpuFailed = false
+
+    /**
+     * A photo the computer asked for (docs/protocol.md, "Photos"): the camera
+     * gets a photo output only while one is being taken, so the video keeps
+     * its frame rate otherwise.
+     */
+    private var photoWanted = false
+    private var lastPhotoRequest = 0L
     private var copyingAnalysisUseCase: ImageAnalysis? = null
 
     /** Which way up the phone is held (see [HeldRotation]); the video follows it. */
@@ -730,6 +740,14 @@ class MainActivity : ComponentActivity() {
             .also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
+        val capture = if (photoWanted) {
+            ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setTargetRotation(heldRotation)
+                .build()
+        } else {
+            null
+        }
         try {
             provider.unbindAll()
             activeCamera = null
@@ -747,18 +765,27 @@ class MainActivity : ComponentActivity() {
                 }
                 val group = UseCaseGroup.Builder()
                     .addUseCase(preview)
+                    .apply { capture?.let { addUseCase(it) } }
                     .addEffect(gpu.effect)
                     .build()
                 provider.bindToLifecycle(this, selector, group)
             } else {
                 val info = selector.filter(provider.availableCameraInfos).firstOrNull()
-                provider.bindToLifecycle(this, selector, preview, copyingAnalysis(fpsRange, info))
+                val useCases = listOfNotNull(preview, copyingAnalysis(fpsRange, info), capture)
+                provider.bindToLifecycle(this, selector, *useCases.toTypedArray())
             }
             cameraReady = true
             applyCameraSettings(cameraSettings)
             cameraProblem = null
             render()
+            capture?.let(::takePhoto)
         } catch (error: Exception) {
+            if (capture != null) {
+                // This camera cannot add a photo output: say so, and go back to video only.
+                Log.w(TAG, "Could not add the photo output", error)
+                finishPhoto(ByteArray(0))
+                return
+            }
             if (gpu != null) {
                 fallBackToCopying(error)
                 return
@@ -766,6 +793,38 @@ class MainActivity : ComponentActivity() {
             cameraProblem = t("cameraStartFailed", error.localizedMessage)
             render()
         }
+    }
+
+    private fun takePhoto(capture: ImageCapture) {
+        capture.takePicture(
+            cameraExecutor,
+            object : ImageCapture.OnImageCapturedCallback() {
+                override fun onCaptureSuccess(image: ImageProxy) {
+                    val jpeg = try {
+                        val buffer = image.planes[0].buffer
+                        ByteArray(buffer.remaining()).also { buffer.get(it) }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "Could not read the photo", error)
+                        ByteArray(0)
+                    } finally {
+                        image.close()
+                    }
+                    runOnUiThread { finishPhoto(jpeg) }
+                }
+
+                override fun onError(error: ImageCaptureException) {
+                    Log.w(TAG, "Could not take the photo", error)
+                    runOnUiThread { finishPhoto(ByteArray(0)) }
+                }
+            },
+        )
+    }
+
+    /** Hand [jpeg] (empty if it failed) to the computer and go back to video only. */
+    private fun finishPhoto(jpeg: ByteArray) {
+        server?.publishPhoto(jpeg)
+        photoWanted = false
+        bindCamera()
     }
 
     /** The CPU path: camera frames copied into the encoder (see [analyzeFrame]). */
@@ -907,6 +966,15 @@ class MainActivity : ComponentActivity() {
 
     private fun applyCameraControl(command: JSONObject) {
         try {
+            val photo = command.optLong("photo", 0L)
+            command.remove("photo")
+            if (photo > lastPhotoRequest) {
+                lastPhotoRequest = photo
+                if (!photoWanted) {
+                    photoWanted = true
+                    previewView.post { bindCamera() }
+                }
+            }
             for (key in command.keys()) cameraSettings.put(key, command.get(key))
             settingsSnapshot = JSONObject(cameraSettings.toString())
             val resolution = command.optString("resolution", requestedResolution)
@@ -1280,6 +1348,7 @@ class MainActivity : ComponentActivity() {
         override fun streaming(computer: Computer?) {
             runOnUiThread {
                 connected = computer
+                lastPhotoRequest = 0L // photo numbers count per connection
                 if (computer == null) {
                     deliveredFps = 0
                     rateWindowStartedAt = 0L

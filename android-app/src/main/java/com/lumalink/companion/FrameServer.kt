@@ -120,6 +120,13 @@ internal class FrameServer(
         frames.publish(frame)
     }
 
+    /** Send [jpeg] (empty when the photo failed) to the streaming computer before its next frame. */
+    fun publishPhoto(jpeg: ByteArray) {
+        pendingPhoto.set(jpeg)
+    }
+
+    private val pendingPhoto = AtomicReference<ByteArray?>(null)
+
     fun stop() {
         if (!running) return
         running = false
@@ -307,16 +314,28 @@ internal class FrameServer(
         val reader = frames.Reader()
         while (!client.isClosed) {
             val frame = reader.next { running && isSession(client) } ?: break
+            pendingPhoto.getAndSet(null)?.let { jpeg ->
+                // A photo message: its length has the highest bit set ("Photos").
+                output.writeInt(PHOTO_FLAG or jpeg.size)
+                output.write(jpeg)
+                output.flush()
+                readAck(input)
+            }
             output.writeInt(frame.size)
             output.write(frame)
             output.flush()
-            check(input.readUnsignedByte() == FRAME_ACK) { "Компьютер прислал неверное подтверждение кадра" }
-            val length = input.readInt()
-            check(length in 0..MAX_JSON) { "Недопустимый размер команды камеры" }
-            if (length > 0) {
-                val payload = ByteArray(length).also(input::readFully)
-                events.control(JSONObject(payload.toString(Charsets.UTF_8)))
-            }
+            readAck(input)
+        }
+    }
+
+    /** The computer's answer to a frame or a photo, with a settings change if it sent one. */
+    private fun readAck(input: DataInputStream) {
+        check(input.readUnsignedByte() == FRAME_ACK) { "Компьютер прислал неверное подтверждение кадра" }
+        val length = input.readInt()
+        check(length in 0..MAX_JSON) { "Недопустимый размер команды камеры" }
+        if (length > 0) {
+            val payload = ByteArray(length).also(input::readFully)
+            events.control(JSONObject(payload.toString(Charsets.UTF_8)))
         }
     }
 
@@ -346,6 +365,7 @@ internal class FrameServer(
             .put("link", link.token)
             .put("version", phone.version)
             .put("lenses", phone.lenses())
+            .put("photo", true)
             .apply { if (secure != null) put("tls", true) }
 
     private fun answerDiscovery(responder: DatagramSocket) {
@@ -454,6 +474,7 @@ internal class FrameServer(
         private const val COOLDOWN_MS = 30_000L
         private const val OLD_STUDIO_INTERVAL_MS = 5_000L
         private const val FRAME_ACK = 0x06
+        private const val PHOTO_FLAG = Int.MIN_VALUE // 0x80000000
         private const val MAX_JSON = 16_384
         private const val MAX_PROBE = 2_048
         private const val MAX_NAME = 64
