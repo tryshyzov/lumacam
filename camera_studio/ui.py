@@ -14,7 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -56,6 +56,7 @@ from camera_studio.widgets import (
     ICON_MAXIMIZE,
     ICON_MINIMIZE,
     ICON_PAUSE,
+    ICON_PHOTO,
     ICON_PLAY,
     ICON_RESTORE,
     ICON_STATUS_ERROR,
@@ -80,7 +81,7 @@ LINK_NAMES = {"usb": "USB", "adb": "USB (ADB)", "wifi": "Wi-Fi"}
 # After a connection drops, the next try waits this long; after the phone
 # refused, it is left alone for a while unless the user picks it again.
 RETRY_DELAY = 2.0
-REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0}
+REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0, "impostor": 60.0}
 VPN_CHECK_INTERVAL = 10.0
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
@@ -221,6 +222,12 @@ class MainWindow(QWidget):
         self.overlay: Overlay | None = None
         self.look_lut: str | None = None
         self._devices_shown: tuple | None = None
+        # Photos: the last request's number, those that arrived, and what to
+        # say about the last one until note_until.
+        self.photo_requests = 0
+        self.photos: queue.Queue[bytes] = queue.Queue()
+        self.photo_note = ""
+        self.photo_note_until = 0.0
         self.virtual_camera: VirtualCameraOutput | None = None
         self.virtual_camera_run = 0
         self.virtual_camera_device = ""
@@ -349,6 +356,11 @@ class MainWindow(QWidget):
         layout.setSpacing(0)
         layout.addStretch(1)
 
+        self.photo_button = self._icon_button(svg_icon(ICON_PHOTO, view=24, size=16, stroke=1.6), icon_size=16)
+        self.photo_button.clicked.connect(self._take_photo)
+        self._bind(self.photo_button.setToolTip, "photo")
+        self._bind(self.photo_button.setAccessibleName, "photo")
+        layout.addWidget(self.photo_button)
         self.pause_button = self._icon_button(self.icons["pause"])
         self.pause_button.clicked.connect(self._toggle_pause)
         layout.addWidget(self.pause_button)
@@ -865,6 +877,55 @@ class MainWindow(QWidget):
             self.look_filter.set_look(Look())
         return decoded
 
+    # ---------------------------------------------------------------- photos
+
+    def _phone_takes_photos(self) -> bool:
+        if self.camera_info is not None:
+            return self.camera_info.get("photo") is True
+        return self.phone is not None and self.phone.photo
+
+    def _take_photo(self) -> None:
+        if not self.camera_connected or self.receiver is None or not self._phone_takes_photos():
+            return
+        self.photo_requests += 1
+        command = self.camera_command()
+        command["photo"] = self.photo_requests
+        try:
+            self.receiver.send_control(command)
+        except (OSError, ConnectionError):
+            return
+        self._say_about_photo(self.t("photo_taking"))
+
+    def _say_about_photo(self, text: str, seconds: float = 6.0) -> None:
+        self.photo_note = text
+        self.photo_note_until = time.monotonic() + seconds
+        QTimer.singleShot(int(seconds * 1000) + 50, self._refresh)
+        self._refresh()
+
+    @staticmethod
+    def photo_folder() -> Path:
+        pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        return Path(pictures or Path.home()) / "LumaLink"
+
+    def _save_photo(self, jpeg: bytes) -> None:
+        if not jpeg:
+            self._say_about_photo(self.t("photo_failed"))
+            return
+        folder = self.photo_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y-%m-%d %H.%M.%S")
+            path = folder / f"LumaLink {stamp}.jpg"
+            number = 2
+            while path.exists():
+                path = folder / f"LumaLink {stamp} ({number}).jpg"
+                number += 1
+            path.write_bytes(jpeg)
+        except OSError as error:
+            self._say_about_photo(self.t("photo_not_saved", error=error))
+            return
+        self._say_about_photo(self.t("photo_saved", name=path.name, folder=folder))
+
     def _select_language(self, language: str) -> None:
         self.language = language
         self.settings.setValue("language", language)
@@ -941,8 +1002,10 @@ class MainWindow(QWidget):
             self.connect_button.style().unpolish(self.connect_button)
             self.connect_button.style().polish(self.connect_button)
 
-        if connected:
-            hint = self.t("hint_wifi") if self.phone is not None and self.phone.link == "wifi" else ""
+        if connected and self.phone is not None and self.phone.link == "wifi":
+            hint = self.t("hint_wifi_encrypted" if self.phone.tls else "hint_wifi")
+        elif connected:
+            hint = ""
         elif self.vpn_blocks_lan:
             hint = self.t("hint_usb_vpn")
         else:
@@ -965,6 +1028,7 @@ class MainWindow(QWidget):
 
         paused = connected and self.paused
         self.pause_button.setEnabled(connected)
+        self.photo_button.setEnabled(connected and self._phone_takes_photos())
         self.pause_button.setIcon(self.icons["play" if paused else "pause"])
         pause_name = self.t("resume" if paused else "pause")
         self.pause_button.setToolTip(pause_name)
@@ -974,7 +1038,9 @@ class MainWindow(QWidget):
         self.preview.empty_text = self.t("empty_text")
         self.preview.show_grid = self.grid_switch.isChecked() and not paused
         self.preview.mirrored = self.mirror_switch.isChecked()
-        if paused:
+        if self.photo_note and time.monotonic() < self.photo_note_until:
+            self.preview.note = self.photo_note
+        elif paused:
             self.preview.note = self.t("paused_note")
         elif connected and self.info_switch.isChecked() and self.frame_size[0]:
             width, height = self.frame_size
@@ -1209,6 +1275,7 @@ class MainWindow(QWidget):
         self.connection_run += 1
         run = self.connection_run
         token = str(self.settings.value(f"tokens/{self._phone_id(phone)}", ""))
+        known = str(self.settings.value(f"pins/{self._phone_id(phone)}", "")) or None
         self.receiver = H264FrameReceiver(
             None,
             STREAM_PORT,
@@ -1219,6 +1286,10 @@ class MainWindow(QWidget):
             hello={**self.computer, "token": token},
             on_accepted=lambda status: self.accepted.put((run, status)),
             on_refused=lambda error: self.refusals.put((run, error)),
+            on_photo=self.photos.put,
+            # Over Wi-Fi even when the phone offers no encryption: one known
+            # to encrypt that stops is turned down (see H264FrameReceiver).
+            known_fingerprint=known if phone.link == "wifi" else None,
         )
         self.streaming = True
         self.receiver.start()
@@ -1234,6 +1305,9 @@ class MainWindow(QWidget):
             self.settings.setValue(f"adb_ids/{self.phone.serial}", phone_id)
         if isinstance(status.get("token"), str) and status["token"]:
             self.settings.setValue(f"tokens/{phone_id}", status["token"])
+        if isinstance(status.get("fingerprint"), str):
+            # The phone's key, to tell it from a device posing as it later.
+            self.settings.setValue(f"pins/{phone_id}", status["fingerprint"])
         self.settings.setValue("phone_id", phone_id)
         self.wait_text = ""
         self._apply_zoom_range()
@@ -1412,6 +1486,12 @@ class MainWindow(QWidget):
 
         while True:
             try:
+                jpeg = self.photos.get_nowait()
+            except queue.Empty:
+                break
+            self._save_photo(jpeg)
+        while True:
+            try:
                 phones = self.phone_lists.get_nowait()
             except queue.Empty:
                 break
@@ -1443,7 +1523,8 @@ class MainWindow(QWidget):
             changed = True
             if not is_error:
                 if message.startswith("Разрешите"):
-                    self.wait_text = self.t("status_allow")
+                    code = message.partition("Код: ")[2]
+                    self.wait_text = self.t("status_allow_code", code=code) if code else self.t("status_allow")
                 continue
             self.error_text = message
             self._forget_camera()

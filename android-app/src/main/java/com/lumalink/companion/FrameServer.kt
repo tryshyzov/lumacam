@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.SSLSocket
 import kotlin.concurrent.thread
 import org.json.JSONObject
 
@@ -36,6 +37,8 @@ internal class FrameServer(
     private val computers: AllowedComputers,
     private val phone: Phone,
     private val events: Events,
+    /** TLS for Wi-Fi ("Encrypted Wi-Fi"), or null where the phone has no key. */
+    private val secure: SecureChannel?,
     onKeyFrameNeeded: () -> Unit,
 ) {
     /** What the server needs to know about the phone, read when asked. */
@@ -56,8 +59,11 @@ internal class FrameServer(
         /** [computer] started streaming, or null when the last one stopped. */
         fun streaming(computer: Computer?)
 
-        /** Ask the user whether [name] may use the camera; call [answer] once. */
-        fun askToAllow(id: String, name: String, answer: (Boolean) -> Unit)
+        /**
+         * Ask the user whether [name] may use the camera, showing [code] (the
+         * pairing code, null without encryption); call [answer] once.
+         */
+        fun askToAllow(id: String, name: String, code: String?, answer: (Boolean) -> Unit)
 
         /** The computer that was being asked about gave up or timed out. */
         fun askingCancelled(id: String)
@@ -114,6 +120,13 @@ internal class FrameServer(
         frames.publish(frame)
     }
 
+    /** Send [jpeg] (empty when the photo failed) to the streaming computer before its next frame. */
+    fun publishPhoto(jpeg: ByteArray) {
+        pendingPhoto.set(jpeg)
+    }
+
+    private val pendingPhoto = AtomicReference<ByteArray?>(null)
+
     fun stop() {
         if (!running) return
         running = false
@@ -149,28 +162,55 @@ internal class FrameServer(
     }
 
     private fun serve(client: Socket, link: Link) {
+        var socket = client
         try {
             client.tcpNoDelay = true
             client.soTimeout = ACK_TIMEOUT_MS
-            val input = DataInputStream(client.getInputStream())
-            val output = DataOutputStream(client.getOutputStream())
-            val magic = ByteArray(MAGIC_V2.size).also(input::readFully)
+            var input = DataInputStream(client.getInputStream())
+            var output = DataOutputStream(client.getOutputStream())
+            var magic = ByteArray(MAGIC_V2.size).also(input::readFully)
+            var encrypted = false
+            if (magic.contentEquals(MAGIC_TLS)) {
+                if (link != Link.WIFI || secure == null) return
+                val tls = secure.socketFactory
+                    .createSocket(client, client.inetAddress.hostAddress, client.port, true) as SSLSocket
+                tls.useClientMode = false
+                tls.soTimeout = ACK_TIMEOUT_MS
+                tls.startHandshake()
+                socket = tls
+                input = DataInputStream(tls.inputStream)
+                output = DataOutputStream(tls.outputStream)
+                magic = ByteArray(MAGIC_V2.size).also(input::readFully)
+                encrypted = true
+            } else if (link == Link.WIFI && secure != null) {
+                // Over Wi-Fi this phone takes only encrypted connections.
+                if (magic.contentEquals(MAGIC_V2)) {
+                    send(output, JSONObject().put("status", "denied").put("reason", "unencrypted"))
+                }
+                return
+            }
             val computer = when {
                 magic.contentEquals(MAGIC_V1) && link == Link.USB -> Computer(null, null, link)
-                magic.contentEquals(MAGIC_V2) -> handshake(client, input, output, link) ?: return
+                magic.contentEquals(MAGIC_V2) -> handshake(socket, input, output, link, encrypted) ?: return
                 else -> return
             }
-            if (!begin(client, computer, output)) return
-            stream(client, input, output)
+            if (!begin(socket, computer, output)) return
+            stream(socket, input, output)
         } catch (_: Exception) {
             // A computer that disconnects only ends its own session.
         } finally {
-            finish(client)
+            finish(socket)
         }
     }
 
     /** Read the hello and decide; the computer, or null after a refusal. */
-    private fun handshake(client: Socket, input: DataInputStream, output: DataOutputStream, link: Link): Computer? {
+    private fun handshake(
+        client: Socket,
+        input: DataInputStream,
+        output: DataOutputStream,
+        link: Link,
+        encrypted: Boolean,
+    ): Computer? {
         val hello = readJson(input)
         val id = hello.optString("id").ifBlank { return null }
         val name = hello.optString("name").ifBlank { "Computer" }.take(MAX_NAME)
@@ -180,7 +220,8 @@ internal class FrameServer(
             return null
         }
         if (link == Link.USB || computers.accepts(id, hello.optString("token"))) return computer
-        return when (ask(client, id, name, output)) {
+        val code = if (encrypted && secure != null) PairingCode.of(secure.certificate, id) else null
+        return when (ask(client, id, name, code, output)) {
             null -> null
             else -> computer
         }
@@ -190,7 +231,7 @@ internal class FrameServer(
      * Ask the user about computer [id] while it waits; the issued token, or
      * null after "denied" was sent.
      */
-    private fun ask(client: Socket, id: String, name: String, output: DataOutputStream): String? {
+    private fun ask(client: Socket, id: String, name: String, code: String?, output: DataOutputStream): String? {
         val refusedRecently = synchronized(lock) {
             val at = refusedAt[id]
             at != null && System.currentTimeMillis() - at < COOLDOWN_MS
@@ -207,7 +248,7 @@ internal class FrameServer(
             send(output, JSONObject().put("status", "waiting"))
             val answer = AtomicReference<Boolean?>(null)
             val answered = CountDownLatch(1)
-            events.askToAllow(id, name) { allowed ->
+            events.askToAllow(id, name, code) { allowed ->
                 if (answer.compareAndSet(null, allowed)) answered.countDown()
             }
             // Watch for the computer giving up while the user decides.
@@ -273,16 +314,28 @@ internal class FrameServer(
         val reader = frames.Reader()
         while (!client.isClosed) {
             val frame = reader.next { running && isSession(client) } ?: break
+            pendingPhoto.getAndSet(null)?.let { jpeg ->
+                // A photo message: its length has the highest bit set ("Photos").
+                output.writeInt(PHOTO_FLAG or jpeg.size)
+                output.write(jpeg)
+                output.flush()
+                readAck(input)
+            }
             output.writeInt(frame.size)
             output.write(frame)
             output.flush()
-            check(input.readUnsignedByte() == FRAME_ACK) { "Компьютер прислал неверное подтверждение кадра" }
-            val length = input.readInt()
-            check(length in 0..MAX_JSON) { "Недопустимый размер команды камеры" }
-            if (length > 0) {
-                val payload = ByteArray(length).also(input::readFully)
-                events.control(JSONObject(payload.toString(Charsets.UTF_8)))
-            }
+            readAck(input)
+        }
+    }
+
+    /** The computer's answer to a frame or a photo, with a settings change if it sent one. */
+    private fun readAck(input: DataInputStream) {
+        check(input.readUnsignedByte() == FRAME_ACK) { "Компьютер прислал неверное подтверждение кадра" }
+        val length = input.readInt()
+        check(length in 0..MAX_JSON) { "Недопустимый размер команды камеры" }
+        if (length > 0) {
+            val payload = ByteArray(length).also(input::readFully)
+            events.control(JSONObject(payload.toString(Charsets.UTF_8)))
         }
     }
 
@@ -312,6 +365,8 @@ internal class FrameServer(
             .put("link", link.token)
             .put("version", phone.version)
             .put("lenses", phone.lenses())
+            .put("photo", true)
+            .apply { if (secure != null) put("tls", true) }
 
     private fun answerDiscovery(responder: DatagramSocket) {
         val buffer = ByteArray(MAX_PROBE)
@@ -407,6 +462,7 @@ internal class FrameServer(
         const val STUDIO_V1_PORT = 8767
         private val MAGIC_V1 = "LUMAAVC1".toByteArray(Charsets.US_ASCII)
         private val MAGIC_V2 = "LUMAAVC2".toByteArray(Charsets.US_ASCII)
+        private val MAGIC_TLS = "LUMATLS1".toByteArray(Charsets.US_ASCII)
         private const val DISCOVER_V1 = "LUMALINK-DISCOVER-1"
         private const val CAMERA_V1 = "LUMALINK-CAMERA-1"
         private const val DISCOVER_V2 = "LUMALINK-DISCOVER-2"
@@ -418,6 +474,7 @@ internal class FrameServer(
         private const val COOLDOWN_MS = 30_000L
         private const val OLD_STUDIO_INTERVAL_MS = 5_000L
         private const val FRAME_ACK = 0x06
+        private const val PHOTO_FLAG = Int.MIN_VALUE // 0x80000000
         private const val MAX_JSON = 16_384
         private const val MAX_PROBE = 2_048
         private const val MAX_NAME = 64
