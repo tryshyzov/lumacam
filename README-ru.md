@@ -74,7 +74,7 @@ sh packaging/linux/build.sh <версия>
 
 ### Arch Linux
 
-В релизах есть и готовый пакет `lumalink-studio-<версия>-1-x86_64.pkg.tar.zst`: `sudo pacman -U <ссылка на него>` ставит его без AUR. Чтобы собрать самому, `packaging/arch/PKGBUILD` собирает LumaLink Studio из исходников релиза и ставит её в /opt — с ярлыком в меню и настройкой LumaLink Camera. Для камеры поставьте `v4l2loopback-dkms`, для ADB — `android-tools`:
+В релизах есть и готовый пакет `lumalink-studio-<версия>-1-x86_64.pkg.tar.zst`. Он не подписан, поэтому сначала скачайте его, а потом поставьте файл (по ссылке pacman неподписанный пакет не ставит): `sudo pacman -U ./lumalink-studio-<версия>-1-x86_64.pkg.tar.zst`. AUR не нужен. Чтобы собрать самому, `packaging/arch/PKGBUILD` собирает LumaLink Studio из исходников релиза и ставит её в /opt — с ярлыком в меню и настройкой LumaLink Camera. Для камеры поставьте `v4l2loopback-dkms`, для ADB — `android-tools`:
 
 ```sh
 cd packaging/arch

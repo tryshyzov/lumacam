@@ -42,7 +42,7 @@ const EN = {
   dl_mac_arm: "M1 or later. macOS 13 Ventura or later.",
   dl_mac_intel_title: "Mac with Intel",
   dl_mac_intel: "macOS 13 Ventura or later.",
-  dl_linux: "x86-64, Ubuntu 22.04 or later. The virtual camera works through v4l2loopback.",
+  dl_linux: "x86-64: Ubuntu 22.04 or later, Debian 12, Arch and others. The virtual camera works through v4l2loopback.",
   dl_linux_deb: ".deb package",
   dl_linux_arch: "Arch Linux package",
   dl_android_title: "Android phone",
