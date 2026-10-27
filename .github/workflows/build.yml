@@ -215,13 +215,16 @@ jobs:
         run: |
           useradd -m builder
           version=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          if [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
+            version="${GITHUB_REF_NAME#v}"  # a release: the package carries its version
+          fi
           work=/home/builder/pkg
           mkdir -p "$work"
           git config --global --add safe.directory "$PWD"
           # The code checked out here, under the name the PKGBUILD downloads.
           git archive --prefix="lumacam-$version/" -o "$work/lumacam-$version.tar.gz" HEAD
           cp packaging/arch/PKGBUILD packaging/arch/lumalink-studio.install "$work/"
-          sed -i "s|^sha256sums=.*|sha256sums=('SKIP')|" "$work/PKGBUILD"
+          sed -i "s|^sha256sums=.*|sha256sums=('SKIP')|; s|^pkgver=.*|pkgver=$version|" "$work/PKGBUILD"
           chown -R builder "$work"
           su builder -c "cd $work && makepkg --noconfirm"
 
@@ -232,6 +235,13 @@ jobs:
           QT_QPA_PLATFORM=offscreen timeout 8 lumalink-studio || status=$?
           # 124: still running when the time was up, as it should be.
           test "$status" -eq 124
+
+      # Arch users install it from the release with pacman -U, without AUR.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LumaLinkStudio-arch
+          path: /home/builder/pkg/lumalink-studio-*.pkg.tar.zst
+          if-no-files-found: error
 
   android:
     name: Android companion
@@ -315,7 +325,7 @@ jobs:
   release:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-notes, desktop, macos, linux, android]
+    needs: [release-notes, desktop, macos, linux, arch, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -332,7 +342,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -t files < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.apk' \))
+          mapfile -t files < <(find artifacts -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.pkg.tar.zst' -o -name '*.apk' \))
           gh release create "$GITHUB_REF_NAME" "${files[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "LumaLink ${GITHUB_REF_NAME#v}" \
