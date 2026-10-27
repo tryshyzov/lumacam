@@ -78,7 +78,7 @@ LINK_NAMES = {"usb": "USB", "adb": "USB (ADB)", "wifi": "Wi-Fi"}
 # After a connection drops, the next try waits this long; after the phone
 # refused, it is left alone for a while unless the user picks it again.
 RETRY_DELAY = 2.0
-REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0}
+REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0, "impostor": 60.0}
 VPN_CHECK_INTERVAL = 10.0
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
@@ -782,8 +782,10 @@ class MainWindow(QWidget):
             self.connect_button.style().unpolish(self.connect_button)
             self.connect_button.style().polish(self.connect_button)
 
-        if connected:
-            hint = self.t("hint_wifi") if self.phone is not None and self.phone.link == "wifi" else ""
+        if connected and self.phone is not None and self.phone.link == "wifi":
+            hint = self.t("hint_wifi_encrypted" if self.phone.tls else "hint_wifi")
+        elif connected:
+            hint = ""
         elif self.vpn_blocks_lan:
             hint = self.t("hint_usb_vpn")
         else:
@@ -1050,6 +1052,7 @@ class MainWindow(QWidget):
         self.connection_run += 1
         run = self.connection_run
         token = str(self.settings.value(f"tokens/{self._phone_id(phone)}", ""))
+        known = str(self.settings.value(f"pins/{self._phone_id(phone)}", "")) or None
         self.receiver = H264FrameReceiver(
             None,
             STREAM_PORT,
@@ -1060,6 +1063,9 @@ class MainWindow(QWidget):
             hello={**self.computer, "token": token},
             on_accepted=lambda status: self.accepted.put((run, status)),
             on_refused=lambda error: self.refusals.put((run, error)),
+            # Over Wi-Fi even when the phone offers no encryption: one known
+            # to encrypt that stops is turned down (see H264FrameReceiver).
+            known_fingerprint=known if phone.link == "wifi" else None,
         )
         self.streaming = True
         self.receiver.start()
@@ -1075,6 +1081,9 @@ class MainWindow(QWidget):
             self.settings.setValue(f"adb_ids/{self.phone.serial}", phone_id)
         if isinstance(status.get("token"), str) and status["token"]:
             self.settings.setValue(f"tokens/{phone_id}", status["token"])
+        if isinstance(status.get("fingerprint"), str):
+            # The phone's key, to tell it from a device posing as it later.
+            self.settings.setValue(f"pins/{phone_id}", status["fingerprint"])
         self.settings.setValue("phone_id", phone_id)
         self.wait_text = ""
         self._apply_zoom_range()
@@ -1283,7 +1292,8 @@ class MainWindow(QWidget):
             changed = True
             if not is_error:
                 if message.startswith("Разрешите"):
-                    self.wait_text = self.t("status_allow")
+                    code = message.partition("Код: ")[2]
+                    self.wait_text = self.t("status_allow_code", code=code) if code else self.t("status_allow")
                 continue
             self.error_text = message
             self._forget_camera()

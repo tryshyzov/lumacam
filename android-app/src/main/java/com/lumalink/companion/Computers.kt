@@ -55,7 +55,9 @@ internal class AllowedComputers(private val preferences: SharedPreferences) {
     }
 
     private companion object {
-        const val KEY = "allowed_computers"
+        // Tokens issued before Wi-Fi was encrypted (0.6, key "allowed_computers")
+        // went in plain text; those computers are asked once more.
+        const val KEY = "allowed_computers_tls"
     }
 }
 

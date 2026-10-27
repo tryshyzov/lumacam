@@ -229,6 +229,7 @@ LUMALINK-CAMERA-2 <json>
 | `name` | What to show in the device list: the device name the user set, or the model |
 | `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (the phone's Wi-Fi network) |
 | `version` | The phone app's version |
+| `tls` | `true` when Wi-Fi connections must use TLS (see "Encrypted Wi-Fi") |
 | `lenses` | For each lens token of the camera settings, the zoom range the phone offers (`zoom`) and the frame rates it can really deliver (`fps`, see below) |
 
 `zoom` is `[minimum, maximum]` as a ratio to the main camera. A minimum below
@@ -321,6 +322,49 @@ silently, a version 2 phone with no computer connected sends
 `LUMALINK-FIND-STUDIO-1` about every 5 seconds; when a version 1 Studio
 answers, the phone tells its user to update LumaLink Studio on the computer.
 It does not connect to it, which would bypass allowing the computer.
+
+### Encrypted Wi-Fi (phone app 0.7 and later)
+
+Over Wi-Fi the token and the video used to travel in plain text, so anyone
+who could read the network's traffic could watch the camera or take the
+token. A phone that announces `"tls": true` in its discovery description
+takes Wi-Fi connections only inside TLS; over USB nothing changes.
+
+**The phone's key.** The phone makes an ECDSA P-256 key once, kept in the
+Android Keystore, with a self-signed certificate. That certificate is its
+TLS server certificate. Its SHA-256 over the DER encoding is the phone's
+fingerprint.
+
+**Connecting.** The computer opens TCP 8765 and sends the 8 bytes
+`LUMATLS1`, then a TLS client handshake (TLS 1.2 or later) on the same
+connection. It does not check the certificate against any authority; it
+checks the fingerprint itself (below). Inside TLS everything is version 2:
+`LUMAAVC2`, the hello, the statuses and the frame stream. Over Wi-Fi a
+phone with `"tls": true` closes a connection that does not start with
+`LUMATLS1`, and, unlike before, accepts only tokens it issued over TLS: a
+computer allowed by a 0.6 phone is asked once more.
+
+**Checking the phone.** The computer keeps the fingerprint of each phone
+`id` it was allowed by. Before it sends the hello (and with it the token),
+it compares the fingerprint of the TLS certificate: when it knows one for
+that `id` and they differ, it closes the connection and tells the user
+another device is posing as the phone. When it knows none, this is the
+first time: it sends the hello with an empty token, and keeps the
+fingerprint once the phone answers `"ok"`.
+A phone `id` with a known fingerprint that answers discovery without
+`"tls"` gets no connection at all: that would be a device posing as it,
+after the token in plain text.
+
+**The pairing code.** While the phone asks its user to allow the computer,
+both show the same six-digit code, so the user can tell a device in
+between apart (it would have to show its own certificate, which changes
+the code). The code is the first four bytes of
+SHA-256(certificate DER ‖ computer `id` in UTF-8), read as a big-endian
+unsigned integer, modulo 1 000 000, written with six digits as "123 456".
+
+A computer that does not know `"tls"` (Studio 0.6) cannot connect to such a
+phone over Wi-Fi, only over USB; Studio 0.7 still connects to 0.6 phones,
+which do not announce it, without encryption, and says so.
 
 ### On the computer
 

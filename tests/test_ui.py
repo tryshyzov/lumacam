@@ -72,8 +72,10 @@ class FakePhoneReceiver(FakeReceiver):
     instances: list["FakePhoneReceiver"] = []
 
     def __init__(self, host, port, on_frame, on_status, usb, adb_fallback=True,
-                 phone=None, hello=None, on_accepted=None, on_refused=None) -> None:
+                 phone=None, hello=None, on_accepted=None, on_refused=None,
+                 known_fingerprint=None) -> None:
         super().__init__()
+        self.known_fingerprint = known_fingerprint
         self.phone = phone
         self.hello = hello
         self.on_status = on_status
@@ -443,6 +445,25 @@ class MainWindowTests(unittest.TestCase):
         window._refresh()
         enabled = [action.isEnabled() for action in window.profile_actions]
         self.assertEqual(enabled, [True, True, False, True, True])
+
+    def test_keeps_an_encrypted_phones_key_and_shows_the_pairing_code(self) -> None:
+        wifi = Phone(id="p2", name="Pixel", link="wifi", address="10.0.0.3", version="0.7.0", tls=True)
+        self.find(wifi)
+        self.window.device_select.activated.emit(0)
+        receiver = FakePhoneReceiver.instances[0]
+        self.assertIsNone(receiver.known_fingerprint)
+        receiver.on_status("Разрешите подключение на экране телефона. Код: 300 879", False)
+        self.window._poll_stream()
+        self.assertIn("300 879", self.window.status_label.text())
+
+        receiver.on_accepted({"status": "ok", "token": "t-2", "fingerprint": "ab" * 32, "camera": {"id": "p2"}})
+        self.window._poll_stream()
+        self.assertEqual(self.window.settings.value("pins/p2"), "ab" * 32)
+
+        # The next connection checks the phone against that key.
+        self.window._disconnect()
+        self.window.device_select.activated.emit(0)
+        self.assertEqual(FakePhoneReceiver.instances[-1].known_fingerprint, "ab" * 32)
 
     def test_reconnects_after_a_drop_and_ignores_the_old_connection(self) -> None:
         usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")

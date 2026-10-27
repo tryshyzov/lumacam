@@ -1231,7 +1231,7 @@ class MainActivity : ComponentActivity() {
     /** Wait for computers on every network the phone may use (docs/protocol.md, version 2). */
     private fun startServer() {
         if (server != null) return
-        val next = FrameServer(allowedComputers, phoneDescription, serverEvents) { keyFrameWanted.set(true) }
+        val next = FrameServer(allowedComputers, phoneDescription, serverEvents, secureChannel) { keyFrameWanted.set(true) }
         try {
             next.start()
             server = next
@@ -1260,6 +1260,9 @@ class MainActivity : ComponentActivity() {
         connected = null
     }
 
+    /** The phone's TLS key for Wi-Fi, made once; null where the Keystore cannot. */
+    private val secureChannel: SecureChannel? by lazy { SecureChannel.load() }
+
     private val phoneDescription = object : FrameServer.Phone {
         override val id: String by lazy { PhoneId.get(preferences) }
         override val name: String by lazy {
@@ -1287,13 +1290,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        override fun askToAllow(id: String, name: String, answer: (Boolean) -> Unit) {
+        override fun askToAllow(id: String, name: String, code: String?, answer: (Boolean) -> Unit) {
             runOnUiThread {
                 askDialog?.dismiss()
                 askingId = id
+                val message = t("allowMessage", name) + if (code != null) "\n\n" + t("allowCode", code) else ""
                 askDialog = AlertDialog.Builder(this@MainActivity)
                     .setTitle(t("allowTitle"))
-                    .setMessage(t("allowMessage", name))
+                    .setMessage(message)
                     .setPositiveButton(t("allow")) { _, _ -> answer(true) }
                     .setNegativeButton(t("deny")) { _, _ -> answer(false) }
                     .setOnCancelListener { answer(false) }

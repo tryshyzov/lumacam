@@ -9,6 +9,7 @@ import http.client
 import ipaddress
 import select
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -27,6 +28,7 @@ HWACCEL_VARIABLE = "LUMALINK_HWACCEL"
 HWACCEL_DEVICES = {"darwin": ("videotoolbox",), "win32": ("d3d11va", "dxva2")}
 USB_PROTOCOL_MAGIC = b"LUMAAVC1"
 PROTOCOL_MAGIC_V2 = b"LUMAAVC2"
+TLS_MAGIC = b"LUMATLS1"
 MAX_STATUS_SIZE = 16_384
 # The phone asks its user to allow a new computer and answers within 60 s.
 ALLOW_TIMEOUT = 70
@@ -533,8 +535,12 @@ class H264FrameReceiver:
         hello: dict | None = None,
         on_accepted: Callable[[dict], None] | None = None,
         on_refused: Callable[[PhoneRefused], None] | None = None,
+        known_fingerprint: str | None = None,
     ) -> None:
         self._phone = phone
+        self._known_fingerprint = known_fingerprint or None
+        self._fingerprint: str | None = None
+        self._pairing_code: str | None = None
         self._hello = hello or {}
         self._on_accepted = on_accepted or (lambda _status: None)
         self._on_refused = on_refused or (lambda _error: None)
@@ -594,19 +600,54 @@ class H264FrameReceiver:
             return socket.create_connection(("127.0.0.1", forward.port), timeout=5)
         return socket.create_connection((phone.address, self._port), timeout=5)
 
+    def _wrap_tls(self, connection: socket.socket) -> socket.socket:
+        """Go inside TLS with a phone that asks for it ("Encrypted Wi-Fi").
+
+        The phone's certificate is its own, so it is checked by fingerprint
+        rather than by an authority: a known phone must show the same one,
+        or the connection ends before the token is sent.
+        """
+        from camera_studio.phones import fingerprint, pairing_code
+
+        connection.sendall(TLS_MAGIC)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        secured = context.wrap_socket(connection)
+        certificate = secured.getpeercert(binary_form=True) or b""
+        seen = fingerprint(certificate)
+        if self._known_fingerprint is not None and seen != self._known_fingerprint:
+            secured.close()
+            raise PhoneRefused(
+                "Это не тот телефон: другое устройство представляется им. "
+                "Подключение остановлено, пропуск не отправлен",
+                "impostor",
+            )
+        self._fingerprint = seen
+        self._pairing_code = pairing_code(certificate, str(self._hello.get("id", "")))
+        return secured
+
     def _shake_hands_v2(self, connection: socket.socket) -> None:
         """Say who this computer is and wait for the phone to let it in."""
-        hello = json.dumps(self._hello).encode("utf-8")
+        hello = dict(self._hello)
+        if self._phone is not None and getattr(self._phone, "tls", False) and self._known_fingerprint is None:
+            # A first encrypted pairing: a token from before went in plain text.
+            hello["token"] = ""
+        hello = json.dumps(hello).encode("utf-8")
         connection.sendall(PROTOCOL_MAGIC_V2 + struct.pack("!I", len(hello)) + hello)
         while True:
             status = read_status(connection)
             kind = status.get("status")
             if kind == "ok":
                 connection.settimeout(5)
+                if self._fingerprint is not None:
+                    status = {**status, "fingerprint": self._fingerprint}
                 self._on_accepted(status)
                 return
             if kind == "waiting":
-                self._on_status("Разрешите подключение на экране телефона", False)
+                code = f". Код: {self._pairing_code}" if self._pairing_code else ""
+                self._on_status(f"Разрешите подключение на экране телефона{code}", False)
                 connection.settimeout(ALLOW_TIMEOUT)
                 continue
             if kind == "denied":
@@ -709,6 +750,17 @@ class H264FrameReceiver:
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             connection.settimeout(5)
             try:
+                if phone.link == "wifi" and getattr(phone, "tls", False):
+                    connection = self._wrap_tls(connection)
+                    self._connection = connection
+                elif phone.link == "wifi" and self._known_fingerprint is not None:
+                    # A phone known to encrypt now offers no encryption: a
+                    # device posing as it, after the token in plain text.
+                    raise PhoneRefused(
+                        "Это не тот телефон: другое устройство представляется им "
+                        "и не шифрует подключение. Подключение остановлено, пропуск не отправлен",
+                        "impostor",
+                    )
                 if version == 2:
                     self._shake_hands_v2(connection)
                 else:
@@ -719,6 +771,8 @@ class H264FrameReceiver:
                     raise
                 self._close()
         link = {"usb": "по USB", "adb": "по USB (ADB)", "wifi": "по Wi-Fi"}[phone.link]
+        if phone.link == "wifi" and self._fingerprint is not None:
+            link += " (зашифровано)"
         self._on_status(f"Получаем H.264-видео {link}…", False)
         self._pump(_SocketReader(connection), connection)
 
