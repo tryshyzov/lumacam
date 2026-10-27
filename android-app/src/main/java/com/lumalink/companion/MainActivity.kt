@@ -47,6 +47,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
+import androidx.camera.core.UseCase
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -122,6 +123,19 @@ class MainActivity : ComponentActivity() {
     private var lastPhotoRequest = 0L
     private var lastMeterRequest = 0L
     private var copyingAnalysisUseCase: ImageAnalysis? = null
+
+    /** The output the stream is made from, whose crop a focus point is in. */
+    private var streamUseCase: UseCase? = null
+
+    /**
+     * A focus point is being held ([focusAt]): the AF mode is left to
+     * CameraX's focus action until [endMetering].
+     */
+    private var meteringFocus = false
+    private val endMetering = Runnable {
+        meteringFocus = false
+        applyCameraSettings(cameraSettings)
+    }
 
     /** Which way up the phone is held (see [HeldRotation]); the video follows it. */
     private var heldRotation = HeldRotation.INITIAL
@@ -733,7 +747,8 @@ class MainActivity : ComponentActivity() {
     private fun scheduleDim() {
         if (!::dimCover.isInitialized) return
         dimCover.removeCallbacks(dimNow)
-        if (streaming() && dimToggle.isOn) {
+        // Not under a question: the dialog would be unreadable at that brightness.
+        if (streaming() && dimToggle.isOn && askDialog?.isShowing != true) {
             if (!dimmed) dimCover.postDelayed(dimNow, DIM_AFTER_MS)
         } else {
             setDimmed(false)
@@ -840,6 +855,9 @@ class MainActivity : ComponentActivity() {
             provider.unbindAll()
             activeCamera = null
             copyingAnalysisUseCase = null
+            streamUseCase = null
+            previewView.removeCallbacks(endMetering)
+            meteringFocus = false
             activeCamera = if (gpu != null) {
                 selector.filter(provider.availableCameraInfos).firstOrNull()?.let { info ->
                     gpu.setCamera(
@@ -856,10 +874,13 @@ class MainActivity : ComponentActivity() {
                     .apply { capture?.let { addUseCase(it) } }
                     .addEffect(gpu.effect)
                     .build()
+                streamUseCase = preview
                 provider.bindToLifecycle(this, selector, group)
             } else {
                 val info = selector.filter(provider.availableCameraInfos).firstOrNull()
-                val useCases = listOfNotNull(preview, copyingAnalysis(fpsRange, info), capture)
+                val analysis = copyingAnalysis(fpsRange, info)
+                streamUseCase = analysis
+                val useCases = listOfNotNull(preview, analysis, capture)
                 provider.bindToLifecycle(this, selector, *useCases.toTypedArray())
             }
             cameraReady = true
@@ -1111,9 +1132,14 @@ class MainActivity : ComponentActivity() {
         val camera = activeCamera ?: return
         val streamDegrees = camera.cameraInfo.getSensorRotationDegrees(HeldRotation.streamTarget(heldRotation))
         val (u, v) = MeterPoint.inBuffer(x, y, MeterPoint.shownDegrees(streamDegrees))
-        val point = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(u, v)
+        // Given the stream's output, the point is taken in its crop (16:9 of a
+        // 4:3 sensor), not in the whole sensor.
+        val factory = streamUseCase?.let { SurfaceOrientedMeteringPointFactory(1f, 1f, it) }
+            ?: SurfaceOrientedMeteringPointFactory(1f, 1f)
+        val point = factory.createPoint(u, v)
         // With manual focus the lens stays put; only the exposure follows the point.
-        val flags = if (cameraSettings.optBoolean("autofocus", true)) {
+        val autofocus = cameraSettings.optBoolean("autofocus", true)
+        val flags = if (autofocus) {
             FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
         } else {
             FocusMeteringAction.FLAG_AE
@@ -1122,6 +1148,15 @@ class MainActivity : ComponentActivity() {
             .setAutoCancelDuration(METER_HOLD_SECONDS, TimeUnit.SECONDS)
             .build()
         if (!camera.cameraInfo.isFocusMeteringSupported(action)) return
+        if (autofocus) {
+            // Our CONTINUOUS_VIDEO overrides CameraX's AF mode, and in it the
+            // focus trigger locks the lens where it is at once instead of
+            // focusing on the point: step aside while the point is held.
+            meteringFocus = true
+            applyCameraSettings(cameraSettings)
+            previewView.removeCallbacks(endMetering)
+            previewView.postDelayed(endMetering, TimeUnit.SECONDS.toMillis(METER_HOLD_SECONDS))
+        }
         camera.cameraControl.startFocusAndMetering(action)
     }
 
@@ -1140,7 +1175,9 @@ class MainActivity : ComponentActivity() {
         val supportedAfModes =
             cameraInfo.getCameraCharacteristic(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
                 ?.toSet().orEmpty()
-        if (autofocus && CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO in supportedAfModes) {
+        if (autofocus && meteringFocus) {
+            // A focus point is held: CameraX's focus action sets the AF mode.
+        } else if (autofocus && CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO in supportedAfModes) {
             options.setCaptureRequestOption(
                 CaptureRequest.CONTROL_AF_MODE,
                 CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
@@ -1509,6 +1546,7 @@ class MainActivity : ComponentActivity() {
                     .setPositiveButton(t("allow")) { _, _ -> answer(true) }
                     .setNegativeButton(t("deny")) { _, _ -> answer(false) }
                     .setOnCancelListener { answer(false) }
+                    .setOnDismissListener { scheduleDim() }
                     .show()
                     .apply {
                         // The theme's teal otherwise: the logo's palette, as on screen.
@@ -1516,6 +1554,7 @@ class MainActivity : ComponentActivity() {
                         getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Palette.ACCENT)
                         getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Palette.TEXT_SECONDARY)
                     }
+                scheduleDim()
             }
         }
 
