@@ -210,21 +210,35 @@ jobs:
           fontconfig libglvnd libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
 
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the PKGBUILD clones it, which a shallow copy does not allow
 
       - name: Build the package
+        shell: bash
         run: |
+          set -euo pipefail
           useradd -m builder
-          version=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
-          if [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
-            version="${GITHUB_REF_NAME#v}"  # a release: the package carries its version
+          git config --global --add safe.directory "$PWD"
+          pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # The recipe users build by hand must name this release.
+            wanted="${GITHUB_REF_NAME#v}"
+            wanted="${wanted//-/_}"  # Arch allows no hyphen in pkgver
+            if [ "$pkgver" != "$wanted" ]; then
+              echo "::error file=packaging/arch/PKGBUILD::pkgver is $pkgver; set it to $wanted for this release"
+              exit 1
+            fi
+          else
+            # A build of unreleased code is not the release it would otherwise be named after.
+            pkgver="$pkgver+g$(git rev-parse --short HEAD)"
           fi
           work=/home/builder/pkg
           mkdir -p "$work"
-          git config --global --add safe.directory "$PWD"
-          # The code checked out here, under the name the PKGBUILD downloads.
-          git archive --prefix="lumacam-$version/" -o "$work/lumacam-$version.tar.gz" HEAD
+          # Build the code checked out here instead of the release's tag.
+          git init --quiet --bare "$work/lumacam.git"
+          git push --quiet "$work/lumacam.git" HEAD:refs/heads/build
           cp packaging/arch/PKGBUILD packaging/arch/lumalink-studio.install "$work/"
-          sed -i "s|^sha256sums=.*|sha256sums=('SKIP')|; s|^pkgver=.*|pkgver=$version|" "$work/PKGBUILD"
+          sed -i "s|^source=.*|source=(\"lumacam::git+file://$work/lumacam.git#commit=$(git rev-parse HEAD)\")|; s|^pkgver=.*|pkgver=$pkgver|" "$work/PKGBUILD"
           chown -R builder "$work"
           su builder -c "cd $work && makepkg --noconfirm"
 
@@ -237,6 +251,8 @@ jobs:
           test "$status" -eq 124
 
       # Arch users install it from the release with pacman -U, without AUR.
+      # Not required for a release: a broken rolling image must not hold
+      # back the other platforms (see the release job).
       - uses: actions/upload-artifact@v4
         with:
           name: LumaLinkStudio-arch
@@ -324,7 +340,13 @@ jobs:
 
   release:
     name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # The Arch package is attached when its job succeeded; the other
+    # platforms are required.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
+      needs.release-notes.result == 'success' && needs.desktop.result == 'success' &&
+      needs.macos.result == 'success' && needs.linux.result == 'success' &&
+      needs.android.result == 'success'
     needs: [release-notes, desktop, macos, linux, arch, android]
     runs-on: ubuntu-latest
     permissions:
