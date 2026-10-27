@@ -44,6 +44,7 @@ const EN = {
   dl_mac_intel: "macOS 13 Ventura or later.",
   dl_linux: "x86-64, Ubuntu 22.04 or later. The virtual camera works through v4l2loopback.",
   dl_linux_deb: ".deb package",
+  dl_linux_arch: "Arch Linux package",
   dl_android_title: "Android phone",
   dl_android: "LumaLink Companion. Android 8.0 or later.",
   dl_button: "Download",
@@ -129,6 +130,7 @@ const ASSETS = {
   "mac-intel": /macos-intel\.dmg$/i,
   linux: /x86_64\.AppImage$/i,
   "linux-deb": /_amd64\.deb$/i,
+  "linux-arch": /x86_64\.pkg\.tar\.zst$/i,
   android: /\.apk$/i,
 };
 
