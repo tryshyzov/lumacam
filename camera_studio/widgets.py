@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     QRectF,
     QSize,
     Qt,
+    QTimer,
     QVariantAnimation,
     Signal,
 )
@@ -376,7 +377,15 @@ def _macos_reduce_motion() -> bool:
 
 
 class Preview(QWidget):
-    """The camera frame, letterboxed on black."""
+    """The camera frame, letterboxed on black.
+
+    A click on the picture emits ``clicked`` with the point in the picture
+    as shown upright and unmirrored, 0 … 1 from the top left, and marks it
+    for a moment (focus and exposure there, see ui).
+    """
+
+    clicked = Signal(float, float)
+    MARK_MS = 900
 
     PAUSE_IN_MS = round(PAUSE_IN_SECONDS * 1000)
     PAUSE_OUT_MS = round(PAUSE_OUT_SECONDS * 1000)
@@ -398,6 +407,30 @@ class Preview(QWidget):
         self.note = ""
         self.empty_title = ""
         self.empty_text = ""
+        self._mark: QPointF | None = None
+        self._mark_timer = QTimer(self)
+        self._mark_timer.setSingleShot(True)
+        self._mark_timer.timeout.connect(self._clear_mark)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self._image is None or event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        frame = self.frame_rect()
+        point = event.position()
+        if not frame.contains(point):
+            return super().mousePressEvent(event)
+        x = (point.x() - frame.left()) / frame.width()
+        y = (point.y() - frame.top()) / frame.height()
+        if self.mirrored:
+            x = 1 - x
+        self._mark = QPointF(point)
+        self._mark_timer.start(self.MARK_MS)
+        self.update()
+        self.clicked.emit(min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0))
+
+    def _clear_mark(self) -> None:
+        self._mark = None
+        self.update()
 
     def set_image(self, image: Image.Image | None) -> None:
         if image is None:
@@ -479,6 +512,11 @@ class Preview(QWidget):
                 painter.drawLine(QPointF(frame.left(), y), QPointF(frame.right(), y))
         if self.note:
             self._paint_note(painter, frame)
+        if self._mark is not None:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(TEXT), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(self._mark, 28, 28)
 
     def _paint_pause_badge(self, painter: QPainter, frame: QRectF) -> None:
         """The badge of pause_frame.paused_frame, growing and fading in."""

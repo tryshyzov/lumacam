@@ -74,10 +74,11 @@ class FakePhoneReceiver(FakeReceiver):
 
     def __init__(self, host, port, on_frame, on_status, usb, adb_fallback=True,
                  phone=None, hello=None, on_accepted=None, on_refused=None,
-                 known_fingerprint=None, on_photo=None) -> None:
+                 known_fingerprint=None, on_photo=None, on_phone_status=None) -> None:
         super().__init__()
         self.known_fingerprint = known_fingerprint
         self.on_photo = on_photo
+        self.on_phone_status = on_phone_status
         self.phone = phone
         self.hello = hello
         self.on_status = on_status
@@ -359,6 +360,7 @@ class MainWindowTests(unittest.TestCase):
                 "whiteBalance": "Авто",
                 "lens": "Задняя",
                 "zoom": 2.5,
+                "torch": False,
                 "fps": 60,
                 "resolution": "1080p",
             },
@@ -554,6 +556,73 @@ class MainWindowTests(unittest.TestCase):
         receiver.on_photo(b"")
         self.window._poll_stream()
         self.assertEqual(self.window.preview.note, "Телефон не смог сделать снимок")
+
+    def connect_v2_phone(self, lenses: dict | None = None) -> FakePhoneReceiver:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.8.0")
+        self.find(usb)
+        receiver = FakePhoneReceiver.instances[-1]
+        receiver.on_accepted({"status": "ok", "camera": {"id": "p1", "lenses": lenses or {}}})
+        self.window.receiver = receiver
+        self.show_frame((10, 20, 30))
+        return receiver
+
+    def test_says_it_understands_phone_status_and_shows_it(self) -> None:
+        receiver = self.connect_v2_phone()
+        self.assertEqual(receiver.hello["features"], ["status"])
+        receiver.on_phone_status({"battery": 64, "charging": True, "temperature": 36.4})
+        self.window._poll_stream()
+        self.assertEqual(self.window.phone_state_label.text(), "Телефон: 64% · заряжается · 36°")
+        receiver.on_phone_status({"battery": 50, "charging": False, "temperature": 44})
+        self.window._poll_stream()
+        self.assertIn("перегревается", self.window.phone_state_label.text())
+        receiver.on_phone_status({"battery": 9, "charging": False, "temperature": 30})
+        self.window._poll_stream()
+        self.assertIn("Батарея садится", self.window.phone_state_label.text())
+
+    def test_torch_only_where_the_lens_has_one(self) -> None:
+        receiver = self.connect_v2_phone({"Задняя": {"torch": True}, "Фронтальная": {}})
+        window = self.window
+        self.assertTrue(window.torch_switch.isEnabled())
+        window.torch_switch.setChecked(True)
+        self.assertTrue(window.camera_command()["torch"])
+        window.lens_seg.set_value("front")
+        window._lens_changed()
+        self.assertFalse(window.torch_switch.isEnabled())
+        self.assertFalse(window.camera_command()["torch"])
+
+    def test_a_click_on_the_picture_meters_there(self) -> None:
+        receiver = self.connect_v2_phone()
+        self.window._meter_at(0.25, 0.75)
+        meter = receiver.commands[-1]["meter"]
+        self.assertEqual((meter["x"], meter["y"], meter["id"]), (0.25, 0.75, 1))
+        # While framing shows only part of the picture, the click maps into it.
+        with mock.patch.object(self.window.effects, "shown_part", return_value=(0.2, 0.1, 0.5, 0.5)):
+            self.window._meter_at(0.5, 0.5)
+        meter = receiver.commands[-1]["meter"]
+        self.assertAlmostEqual(meter["x"], 0.45)
+        self.assertAlmostEqual(meter["y"], 0.35)
+        self.assertEqual(meter["id"], 2)
+
+    def test_saves_and_applies_a_preset(self) -> None:
+        window = self.window
+        window.exposure_slider.setValue(-10)
+        window.look_select.setCurrentIndex(window.look_select.findData("warm"))
+        window.framing_switch.setChecked(True)
+        with mock.patch.object(ui.QInputDialog, "getText", return_value=("Созвон", True)):
+            window._save_preset()
+        self.assertEqual(window.preset_select.currentText(), "Созвон")
+
+        window.exposure_slider.setValue(5)
+        window.look_select.setCurrentIndex(0)
+        window.framing_switch.setChecked(False)
+        window._apply_preset(window.preset_select.findData("Созвон"))
+        self.assertEqual(window.exposure_slider.value(), -10)
+        self.assertEqual(window.look_select.currentData(), "warm")
+        self.assertTrue(window.framing_switch.isChecked())
+
+        window.preset_select.setCurrentIndex(window.preset_select.findData("Созвон"))
+        window._delete_preset()
+        self.assertEqual(window.preset_select.findData("Созвон"), -1)
 
     def test_settings_survive_a_restart(self) -> None:
         self.window._select_language("en")

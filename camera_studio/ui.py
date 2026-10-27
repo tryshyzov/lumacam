@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import socket
@@ -15,10 +16,11 @@ from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QInputDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -84,6 +86,9 @@ LINK_NAMES = {"usb": "USB", "adb": "USB (ADB)", "wifi": "Wi-Fi"}
 RETRY_DELAY = 2.0
 REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0, "impostor": 60.0}
 VPN_CHECK_INTERVAL = 10.0
+# Phone status: when to warn (docs/protocol.md, "Phone status").
+HOT_PHONE = 42.0  # °C, the battery's
+LOW_BATTERY = 15  # %
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
 UPDATE_FIRST_CHECK_DELAY_MS = 3_000
@@ -228,6 +233,12 @@ class MainWindow(QWidget):
         # Photos: the last request's number, those that arrived, and what to
         # say about the last one until note_until.
         self.photo_requests = 0
+        # Phone status (battery, temperature), the focus point's number and
+        # whether the lens has a torch; see docs/protocol.md.
+        self.phone_status: dict | None = None
+        self.phone_statuses: queue.Queue[tuple[int, dict]] = queue.Queue()
+        self.meter_requests = 0
+        self.lens_has_torch = False
         self.photos: queue.Queue[bytes] = queue.Queue()
         self.photo_note = ""
         self.photo_note_until = 0.0
@@ -303,6 +314,7 @@ class MainWindow(QWidget):
         self.retranslate()
         self.setFocus()
         self.poll_timer.start()
+        self._install_shortcuts()
         self.finder = PhoneFinder(
             self.computer,
             self.phone_lists.put,
@@ -492,6 +504,21 @@ class MainWindow(QWidget):
         self.look_reset_button = self._text_button("look_reset", self._reset_look)
         look.addWidget(self.look_reset_button, 0, Qt.AlignmentFlag.AlignLeft)
 
+    def _build_presets_group(self, groups: QVBoxLayout) -> None:
+        """Saved sets of the profile, camera settings, look and effects."""
+        presets = self._group(groups, "presets")
+        self.preset_select = Select(self)
+        self.preset_select.activated.connect(self._apply_preset)
+        self._bind(self.preset_select.setAccessibleName, "presets")
+        presets.addWidget(self.preset_select)
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        row.addWidget(self._text_button("preset_save", self._save_preset))
+        self.preset_delete = self._text_button("preset_delete", self._delete_preset)
+        row.addWidget(self.preset_delete)
+        row.addStretch(1)
+        presets.addLayout(row)
+
     def _build_effects_group(self, groups: QVBoxLayout) -> None:
         """Background blur or a picture behind the person, and face framing."""
         effects = self._group(groups, "effects")
@@ -583,6 +610,9 @@ class MainWindow(QWidget):
         connection.addLayout(status_row)
         self.hint_label = self._label(role="secondary", wrap=True)
         connection.addWidget(self.hint_label)
+        self.phone_state_label = self._label(role="secondary", wrap=True)
+        self.phone_state_label.hide()
+        connection.addWidget(self.phone_state_label)
 
         self.controls = QWidget(content)
         controls = QVBoxLayout(self.controls)
@@ -624,6 +654,8 @@ class MainWindow(QWidget):
         _, self.zoom_value = self._slider_field(
             lens, "zoom", self.zoom_slider, low="1×", high="10×"
         )
+        self.torch_switch = self._switch_row(lens, "torch")
+        self.torch_switch.toggled.connect(self._camera_control_changed)
 
         self.reset_button = QPushButton(self)
         self.reset_button.setObjectName("textButton")
@@ -633,6 +665,7 @@ class MainWindow(QWidget):
         self._bind(self.reset_button.setText, "reset")
         controls.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignLeft)
         groups.addWidget(self.controls)
+        self._build_presets_group(groups)
         self._build_effects_group(groups)
         self._build_look_group(groups)
         groups.addStretch(1)
@@ -795,6 +828,8 @@ class MainWindow(QWidget):
         self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
         self._load_look()
         self._load_effects()
+        self._fill_presets()
+        self.preview.clicked.connect(self._meter_at)
         self._connect_settings()
 
     def _save_option(self, key: str, value: object) -> None:
@@ -957,6 +992,155 @@ class MainWindow(QWidget):
 
     # ---------------------------------------------------------------- photos
 
+    # ------------------------------------------- phone status, focus, keys
+
+    def _phone_state_text(self) -> str:
+        """The phone's battery and temperature, with a warning when it needs one."""
+        status = self.phone_status
+        if not status:
+            return ""
+        parts = []
+        battery = status.get("battery")
+        charging = status.get("charging") is True
+        if isinstance(battery, (int, float)):
+            parts.append(f"{round(battery)}%" + (f" · {self.t('phone_charging')}" if charging else ""))
+        temperature = status.get("temperature")
+        if isinstance(temperature, (int, float)):
+            parts.append(f"{format_number(self.language, temperature, 0)}°")
+        text = self.t("phone_state", state=" · ".join(parts)) if parts else ""
+        if isinstance(temperature, (int, float)) and temperature >= HOT_PHONE:
+            text += " " + self.t("phone_hot")
+        elif isinstance(battery, (int, float)) and battery <= LOW_BATTERY and not charging:
+            text += " " + self.t("phone_low")
+        return text
+
+    def _meter_at(self, x: float, y: float) -> None:
+        """Focus and set the exposure at a clicked point of the picture."""
+        if not self.camera_connected or self.receiver is None:
+            return
+        left, top, width, height = self.effects.shown_part()
+        self.meter_requests += 1
+        command = self.camera_command()
+        command["meter"] = {"x": left + x * width, "y": top + y * height, "id": self.meter_requests}
+        try:
+            self.receiver.send_control(command)
+        except (OSError, ConnectionError):
+            pass
+
+    def _install_shortcuts(self) -> None:
+        """Keys for what is used during a call: pause, photo, lens, torch, blur."""
+        for key, action in (
+            ("Space", self._toggle_pause),
+            ("F", self._take_photo),
+            ("C", lambda: self.lens_seg.set_value("front" if self.lens_seg.value() == "rear" else "rear") or self._lens_changed()),
+            ("T", lambda: self.torch_switch.isEnabled() and self.torch_switch.setChecked(not self.torch_switch.isChecked())),
+            ("B", self._toggle_blur),
+        ):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(action)
+
+    def _toggle_blur(self) -> None:
+        blurred = self.background_select.currentData() == "blur"
+        self.background_select.setCurrentIndex(self.background_select.findData("none" if blurred else "blur"))
+
+    # --------------------------------------------------------------- presets
+
+    def _presets(self) -> list[dict]:
+        try:
+            presets = json.loads(str(self.settings.value("presets", "[]")))
+        except json.JSONDecodeError:
+            return []
+        return [p for p in presets if isinstance(p, dict) and isinstance(p.get("name"), str)]
+
+    def _fill_presets(self, selected: str | None = None) -> None:
+        select = self.preset_select
+        select.blockSignals(True)
+        select.clear()
+        select.addItem(self.t("preset_none"), None)
+        for preset in self._presets():
+            select.addItem(preset["name"], preset["name"])
+        index = select.findData(selected) if selected else 0
+        select.setCurrentIndex(max(0, index))
+        select.blockSignals(False)
+        self.preset_delete.setVisible(select.currentData() is not None)
+
+    def current_preset(self, name: str) -> dict:
+        return {
+            "name": name,
+            "profile": self.profile_index,
+            "autofocus": self.autofocus_switch.isChecked(),
+            "focus": self.focus_slider.value(),
+            "exposure": self.exposure_slider.value(),
+            "iso": self.iso_seg.value(),
+            "white_balance": self.white_balance_select.currentIndex(),
+            "lens": self.lens_seg.value(),
+            "zoom": self.zoom_slider.value(),
+            "torch": self.torch_switch.isChecked(),
+            "look": self.look_select.currentData() or "none",
+            "look_sliders": {key: slider.value() for key, (slider, _v) in self.look_sliders.items()},
+            "lut": self.look_lut,
+            "overlay": self.overlay.path if self.overlay else None,
+            "background": self.background_select.currentData() or "none",
+            "blur": self.blur_slider.value(),
+            "background_image": self.effect_image,
+            "framing": self.framing_switch.isChecked(),
+        }
+
+    def _save_preset(self) -> None:
+        name, ok = QInputDialog.getText(self, self.t("preset_save"), self.t("preset_name"))
+        name = name.strip()
+        if not ok or not name:
+            return
+        presets = [p for p in self._presets() if p["name"] != name] + [self.current_preset(name)]
+        self.settings.setValue("presets", json.dumps(presets, ensure_ascii=False))
+        self._fill_presets(name)
+
+    def _delete_preset(self) -> None:
+        name = self.preset_select.currentData()
+        if name is None:
+            return
+        presets = [p for p in self._presets() if p["name"] != name]
+        self.settings.setValue("presets", json.dumps(presets, ensure_ascii=False))
+        self._fill_presets()
+
+    def _apply_preset(self, index: int) -> None:
+        name = self.preset_select.itemData(index)
+        self.preset_delete.setVisible(name is not None)
+        preset = next((p for p in self._presets() if p["name"] == name), None)
+        if preset is None:
+            return
+        if isinstance(preset.get("profile"), int) and 0 <= preset["profile"] < len(PROFILES):
+            self.profile_index = preset["profile"]
+        self.autofocus_switch.setChecked(bool(preset.get("autofocus", True)))
+        self.focus_slider.setValue(int(preset.get("focus", 50)))
+        self.exposure_slider.setValue(int(preset.get("exposure", 0)))
+        if preset.get("iso") in ISO_VALUES:
+            self.iso_seg.set_value(preset["iso"])
+        self.white_balance_select.setCurrentIndex(int(preset.get("white_balance", 0)))
+        if preset.get("lens") in PHONE_LENS:
+            self.lens_seg.set_value(preset["lens"])
+        self._apply_zoom_range()
+        self.zoom_slider.setValue(int(preset.get("zoom", 10)))
+        self.torch_switch.setChecked(bool(preset.get("torch")) and self.lens_has_torch)
+        self.look_select.setCurrentIndex(max(0, self.look_select.findData(preset.get("look", "none"))))
+        for key, (slider, _value) in self.look_sliders.items():
+            slider.setValue(int(preset.get("look_sliders", {}).get(key, 0)))
+        lut, overlay = preset.get("lut"), preset.get("overlay")
+        self.look_lut = lut if lut and Path(lut).is_file() else None
+        try:
+            self.overlay = Overlay(overlay) if overlay and Path(overlay).is_file() else None
+        except OSError:
+            self.overlay = None
+        self._look_changed()
+        image = preset.get("background_image")
+        self.effect_image = image if image and Path(image).is_file() else None
+        self.blur_slider.setValue(int(preset.get("blur", 60)))
+        self.framing_switch.setChecked(bool(preset.get("framing")))
+        self.background_select.setCurrentIndex(max(0, self.background_select.findData(preset.get("background", "none"))))
+        self._effects_changed()
+        self._camera_control_changed()
+
     def _phone_takes_photos(self) -> bool:
         if self.camera_info is not None:
             return self.camera_info.get("photo") is True
@@ -1094,6 +1278,9 @@ class MainWindow(QWidget):
             hint = self.t("hint_usb_macos" if MACOS else "hint_usb")
         self.hint_label.setText(hint)
         self.hint_label.setVisible(bool(hint))
+        state = self._phone_state_text() if connected else ""
+        self.phone_state_label.setText(state)
+        self.phone_state_label.setVisible(bool(state))
         self._fill_devices()
 
         self.controls.setEnabled(connected)
@@ -1211,6 +1398,13 @@ class MainWindow(QWidget):
             if usable:
                 self.profile_index = max(usable, key=lambda i: PROFILES[i][1])
                 self._schedule_camera_control_update()
+        try:
+            self.lens_has_torch = source.lenses[lens].get("torch") is True  # type: ignore[union-attr]
+        except (AttributeError, KeyError):
+            self.lens_has_torch = False
+        self.torch_switch.setEnabled(self.lens_has_torch)
+        if not self.lens_has_torch and self.torch_switch.isChecked():
+            self.torch_switch.setChecked(False)
         low, high = zoom_range(source, lens)
         self.zoom_slider.setRange(round(low * 10), round(high * 10))
         low_label, high_label = self.scale_labels["zoom"]
@@ -1228,6 +1422,7 @@ class MainWindow(QWidget):
             "whiteBalance": PHONE_WHITE_BALANCE[self.white_balance_select.currentIndex()][1],
             "lens": PHONE_LENS[self.lens_seg.value()],
             "zoom": self.zoom_slider.value() / 10,
+            "torch": self.lens_has_torch and self.torch_switch.isChecked(),
             "fps": fps,
             "resolution": resolution,
         }
@@ -1363,10 +1558,11 @@ class MainWindow(QWidget):
             lambda message, is_error: self._receive_status(message, is_error, run),
             usb=phone.link != "wifi",
             phone=phone,
-            hello={**self.computer, "token": token},
+            hello={**self.computer, "token": token, "features": ["status"]},
             on_accepted=lambda status: self.accepted.put((run, status)),
             on_refused=lambda error: self.refusals.put((run, error)),
             on_photo=self.photos.put,
+            on_phone_status=lambda status: self.phone_statuses.put((run, status)),
             # Over Wi-Fi even when the phone offers no encryption: one known
             # to encrypt that stops is turned down (see H264FrameReceiver).
             known_fingerprint=known if phone.link == "wifi" else None,
@@ -1400,6 +1596,7 @@ class MainWindow(QWidget):
         self.streaming = False
         self.phone = None
         self.camera_info = None
+        self.phone_status = None
         self.wait_text = ""
         self._forget_camera()
 
@@ -1570,6 +1767,14 @@ class MainWindow(QWidget):
             except queue.Empty:
                 break
             self._save_photo(jpeg)
+        while True:
+            try:
+                run, status = self.phone_statuses.get_nowait()
+            except queue.Empty:
+                break
+            if run == self.connection_run:
+                self.phone_status = status
+                changed = True
         while True:
             try:
                 phones = self.phone_lists.get_nowait()

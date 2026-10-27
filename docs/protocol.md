@@ -230,6 +230,7 @@ LUMALINK-CAMERA-2 <json>
 | `link` | The interface the probe arrived on: `"usb"` (USB tethering or loopback, that is `adb forward`) or `"wifi"` (the phone's Wi-Fi network) |
 | `version` | The phone app's version |
 | `photo` | `true` when the phone takes photos on request (see "Photos") |
+| `status` | `true` when the phone sends its battery and temperature (see "Phone status") |
 | `tls` | `true` when Wi-Fi connections must use TLS (see "Encrypted Wi-Fi") |
 | `lenses` | For each lens token of the camera settings, the zoom range the phone offers (`zoom`) and the frame rates it can really deliver (`fps`, see below) |
 
@@ -386,6 +387,35 @@ The highest bit tells it from a frame, whose length never has it. The
 computer acknowledges it like a frame. While the phone takes the photo the
 video may stop for a moment: the Android app adds the photo output to the
 camera only for that photo, so the video keeps its frame rate otherwise.
+
+### Phone status, torch and focus point (0.8 and later)
+
+**Features.** A computer lists what it understands in its hello:
+`"features": ["status"]`. A phone sends the messages below only to a
+computer that listed them; older computers never see them.
+
+**Phone status.** A phone that announces `"status": true` sends, at most
+every 5 seconds and between two frames, a status message instead of a
+frame:
+
+```
+length   u32      0x40000000 | number of bytes that follow, at most 16 384
+data     bytes    UTF-8 JSON: {"battery": 0…100, "charging": true/false, "temperature": °C or null}
+```
+
+`temperature` is the battery's, the one Android reports to apps. The
+computer acknowledges the message like a frame. Its second highest bit
+tells it from a frame (and from a photo, which has the highest).
+
+**Torch.** For each lens with a flash, `lenses.<lens>.torch` is `true`.
+The camera settings key `"torch": true/false` turns it on or off.
+
+**Focus point.** The camera settings key
+`"meter": {"x": 0…1, "y": 0…1, "id": <number>}` asks the phone to focus
+and set the exposure at that point, with (0, 0) at the top left of the
+picture as the computer shows it (upright, unmirrored). A new `id` starts
+a new metering; the phone keeps it for about 5 seconds, then goes back to
+its automatic metering. Phones without the key ignore it.
 
 ### On the computer
 

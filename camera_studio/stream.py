@@ -43,6 +43,9 @@ MAX_FRAME_SIZE = 4_000_000
 # A photo message's length has its highest bit set (docs/protocol.md, "Photos").
 PHOTO_FLAG = 0x8000_0000
 MAX_PHOTO_SIZE = 32_000_000
+# A phone status message's length has the second highest bit ("Phone status").
+STATUS_FLAG = 0x4000_0000
+MAX_STATUS_MESSAGE = 16_384
 LAN_PROBE_PORT = 9
 WSAEACCES = 10013
 
@@ -258,18 +261,23 @@ def encode_control_payload(command: dict[str, object]) -> bytes:
     return json.dumps(command, separators=(",", ":")).encode("utf-8")
 
 
-def read_message(stream: BinaryIO | _SocketReader) -> tuple[bool, bytes]:
-    """The next message from the phone: (True, JPEG) for a photo, else (False, a frame)."""
+def read_message(stream: BinaryIO | _SocketReader) -> tuple[str, bytes]:
+    """The next message from the phone: ("photo", JPEG), ("status", JSON) or ("frame", an access unit)."""
     header = _read_exactly(stream, 4, "Заголовок H.264-пакета получен не полностью")
     content_length = struct.unpack("!I", header)[0]
     if content_length & PHOTO_FLAG:
         size = content_length & ~PHOTO_FLAG
         if size > MAX_PHOTO_SIZE:
             raise ValueError("Недопустимый размер снимка")
-        return True, _read_exactly(stream, size, "Снимок получен не полностью") if size else b""
+        return "photo", _read_exactly(stream, size, "Снимок получен не полностью") if size else b""
+    if content_length & STATUS_FLAG:
+        size = content_length & ~STATUS_FLAG
+        if size <= 0 or size > MAX_STATUS_MESSAGE:
+            raise ValueError("Недопустимый размер сообщения телефона")
+        return "status", _read_exactly(stream, size, "Сообщение телефона получено не полностью")
     if content_length <= 0 or content_length > MAX_FRAME_SIZE:
         raise ValueError("Недопустимый размер H.264-пакета")
-    return False, _read_exactly(stream, content_length, "H.264-пакет получен не полностью")
+    return "frame", _read_exactly(stream, content_length, "H.264-пакет получен не полностью")
 
 
 def read_video_packet(stream: BinaryIO | _SocketReader) -> bytes:
@@ -564,8 +572,10 @@ class H264FrameReceiver:
         on_refused: Callable[[PhoneRefused], None] | None = None,
         known_fingerprint: str | None = None,
         on_photo: Callable[[bytes], None] | None = None,
+        on_phone_status: Callable[[dict], None] | None = None,
     ) -> None:
         self._on_photo = on_photo or (lambda _jpeg: None)
+        self._on_phone_status = on_phone_status or (lambda _status: None)
         self._phone = phone
         self._known_fingerprint = known_fingerprint or None
         self._fingerprint: str | None = None
@@ -815,15 +825,22 @@ class H264FrameReceiver:
         its way at a time, so the latency stays bounded.
         """
         while not self._stop.is_set():
-            is_photo, packet = read_message(stream)
+            kind, packet = read_message(stream)
             with self._send_lock:
                 pending = bytearray(USB_FRAME_ACK)
                 command = self._pending_controls.pop() if self._pending_controls else b""
                 pending.extend(struct.pack("!I", len(command)))
                 pending.extend(command)
                 connection.sendall(pending)
-            if is_photo:
+            if kind == "photo":
                 self._on_photo(packet)
+            elif kind == "status":
+                try:
+                    status = json.loads(packet.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    status = None
+                if isinstance(status, dict):
+                    self._on_phone_status(status)
             else:
                 self._on_frame(packet)
 
