@@ -1373,6 +1373,12 @@ class MainActivity : ComponentActivity() {
                     .setNegativeButton(t("deny")) { _, _ -> answer(false) }
                     .setOnCancelListener { answer(false) }
                     .show()
+                    .apply {
+                        // The theme's teal otherwise: the logo's palette, as on screen.
+                        window?.setBackgroundDrawable(rounded(Palette.SHEET, dp(12).toFloat()))
+                        getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(Palette.ACCENT)
+                        getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(Palette.TEXT_SECONDARY)
+                    }
             }
         }
 
