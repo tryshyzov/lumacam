@@ -85,6 +85,15 @@ python3 -m pip install -r requirements.txt pyinstaller
 sh packaging/linux/build.sh <version>
 ```
 
+### Arch Linux
+
+`packaging/arch/PKGBUILD` builds LumaLink Studio from the release's source and installs it in /opt with a menu entry and the LumaLink Camera settings. Install `v4l2loopback-dkms` for the camera and `android-tools` for ADB:
+
+```sh
+cd packaging/arch
+makepkg -si
+```
+
 ## Connect the Android camera
 
 The `android-app` module is a native Kotlin/CameraX companion. It previews the camera and streams hardware-encoded H.264 access units to the desktop without an access code. USB uses a length-prefixed binary protocol with per-frame acknowledgement and camera-control messages over the phone's USB-tethering network; Wi-Fi uses the same video/control framing over a TCP connection. USB debugging is needed only for the VPN fallback described below.
