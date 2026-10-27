@@ -154,3 +154,142 @@ class HandshakeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FIXTURES = __import__("pathlib").Path(__file__).parent / "fixtures"
+
+
+class EncryptedWifiTests(unittest.TestCase):
+    """A phone that takes Wi-Fi connections inside TLS (docs/protocol.md)."""
+
+    hello = {"id": "computer-1", "name": "Studio Mac", "token": "old-plain-token"}
+
+    def tls_phone(self, *statuses: dict):
+        import ssl
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(FIXTURES / "phone-cert.pem", FIXTURES / "phone-key.pem")
+
+        def script(server: FakePhoneServer, client: socket.socket) -> None:
+            server.seen.append(read_exactly(client, 8))
+            secured = context.wrap_socket(client, server_side=True)
+            version_2(*statuses)(server, secured)
+
+        server = FakePhoneServer(script)
+        self.addCleanup(server.close)
+        return server
+
+    def receive(self, port: int, known: str | None):
+        from camera_studio.stream import H264FrameReceiver
+
+        frames, statuses, accepted, refused = [], [], [], []
+        got, finished = threading.Event(), threading.Event()
+        phone = Phone(id="p1", name="Redmi", link="wifi", address="127.0.0.1", version="0.7.0", tls=True)
+        receiver = H264FrameReceiver(
+            None, port,
+            lambda frame: (frames.append(frame), got.set()),
+            lambda text, error: (statuses.append((text, error)), finished.set() if error else None),
+            usb=False, phone=phone, hello=self.hello,
+            on_accepted=accepted.append, on_refused=refused.append, known_fingerprint=known,
+        )
+        receiver.start()
+        self.addCleanup(receiver.stop)
+        return frames, statuses, accepted, refused, got, finished
+
+    @staticmethod
+    def certificate() -> bytes:
+        import ssl
+
+        return ssl.PEM_cert_to_DER_cert((FIXTURES / "phone-cert.pem").read_text())
+
+    def test_first_pairing_shows_the_code_and_keeps_the_fingerprint(self) -> None:
+        from camera_studio.phones import fingerprint, pairing_code
+
+        server = self.tls_phone({"status": "waiting"}, {"status": "ok", "token": "t-new", "camera": {"id": "p1"}})
+        frames, statuses, accepted, _, got, _ = self.receive(server.port, known=None)
+        self.assertTrue(got.wait(5))
+        self.assertEqual(server.seen, [b"LUMATLS1", b"LUMAAVC2"])
+        # The token from an unencrypted pairing is not sent.
+        self.assertEqual(server.hellos[0]["token"], "")
+        code = pairing_code(self.certificate(), "computer-1")
+        self.assertIn((f"Разрешите подключение на экране телефона. Код: {code}", False), statuses)
+        self.assertEqual(accepted[0]["fingerprint"], fingerprint(self.certificate()))
+        self.assertEqual(frames, [ACCESS_UNIT])
+
+    def test_a_known_phone_gets_the_token(self) -> None:
+        from camera_studio.phones import fingerprint
+
+        server = self.tls_phone({"status": "ok", "camera": {"id": "p1"}})
+        frames, _, accepted, _, got, _ = self.receive(server.port, known=fingerprint(self.certificate()))
+        self.assertTrue(got.wait(5))
+        self.assertEqual(server.hellos[0]["token"], "old-plain-token")
+        self.assertEqual(len(accepted), 1)
+
+    def test_another_device_posing_as_the_phone_gets_nothing(self) -> None:
+        server = self.tls_phone({"status": "ok", "camera": {"id": "p1"}})
+        frames, statuses, accepted, refused, _, finished = self.receive(server.port, known="00" * 32)
+        self.assertTrue(finished.wait(5))
+        self.assertEqual(server.hellos, [])
+        self.assertEqual((refused[0].status, frames, accepted), ("impostor", [], []))
+        self.assertIn("не тот телефон", statuses[-1][0])
+
+    def test_a_known_phone_that_stops_encrypting_gets_nothing(self) -> None:
+        from camera_studio.phones import fingerprint
+        from camera_studio.stream import H264FrameReceiver
+
+        # Answers like a phone without "tls": plain version 2.
+        server = FakePhoneServer(version_2({"status": "ok", "camera": {"id": "p1"}}))
+        self.addCleanup(server.close)
+        refused, statuses = [], []
+        finished = threading.Event()
+        phone = Phone(id="p1", name="Redmi", link="wifi", address="127.0.0.1", version="0.6.0", tls=False)
+        receiver = H264FrameReceiver(
+            None, server.port, lambda frame: None,
+            lambda text, error: (statuses.append(text), finished.set() if error else None),
+            usb=False, phone=phone, hello=self.hello, on_refused=refused.append,
+            known_fingerprint=fingerprint(self.certificate()),
+        )
+        receiver.start()
+        self.addCleanup(receiver.stop)
+        self.assertTrue(finished.wait(5))
+        self.assertEqual(server.hellos, [])
+        self.assertEqual(refused[0].status, "impostor")
+
+    def test_pairing_code_has_six_digits_in_two_groups(self) -> None:
+        from camera_studio.phones import pairing_code
+
+        # A fixed vector the phone app's test checks too (PairingCodeTest.kt).
+        self.assertEqual(pairing_code(b"certificate", "computer-1"), "300 879")
+        self.assertRegex(pairing_code(b"certificate", "computer-1"), r"^\d{3} \d{3}$")
+        self.assertNotEqual(pairing_code(b"certificate", "computer-1"), pairing_code(b"certificate", "computer-2"))
+
+
+class PhotoTests(unittest.TestCase):
+    def test_a_photo_message_goes_to_on_photo_not_to_the_decoder(self) -> None:
+        jpeg = b"\xff\xd8 a photo \xff\xd9"
+
+        def script(server: FakePhoneServer, client: socket.socket) -> None:
+            server.seen.append(read_exactly(client, 8))
+            length = struct.unpack("!I", read_exactly(client, 4))[0]
+            read_exactly(client, length)
+            client.sendall(message({"status": "ok", "camera": {"id": "p1"}}))
+            client.sendall(struct.pack("!I", 0x8000_0000 | len(jpeg)) + jpeg)
+            read_exactly(client, 5)
+            client.sendall(struct.pack("!I", len(ACCESS_UNIT)) + ACCESS_UNIT)
+            read_exactly(client, 5)
+            server.done.wait(2)
+
+        server = FakePhoneServer(script)
+        self.addCleanup(server.close)
+        frames, photos = [], []
+        got = threading.Event()
+        phone = Phone(id="p1", name="Redmi", link="usb", address="127.0.0.1", version="0.7.0", photo=True)
+        receiver = H264FrameReceiver(
+            None, server.port, lambda frame: (frames.append(frame), got.set()), lambda *_: None,
+            usb=True, phone=phone, hello={"id": "c", "name": "n", "token": ""}, on_photo=photos.append,
+        )
+        receiver.start()
+        self.addCleanup(receiver.stop)
+        self.assertTrue(got.wait(3))
+        self.assertEqual(photos, [jpeg])
+        self.assertEqual(frames, [ACCESS_UNIT])
