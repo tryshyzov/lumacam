@@ -23,8 +23,11 @@ import org.json.JSONObject
 /** How a computer reached the phone. */
 internal enum class Link(val token: String) { USB("usb"), WIFI("wifi") }
 
-/** A computer streaming from the phone; [name] is null for a version 1 computer. */
-internal data class Computer(val id: String?, val name: String?, val link: Link)
+/**
+ * A computer streaming from the phone; [name] is null for a version 1 computer.
+ * [status]: it takes status messages ("Phone status").
+ */
+internal data class Computer(val id: String?, val name: String?, val link: Link, val status: Boolean = false)
 
 /**
  * Serves the camera to computers, version 2 of docs/protocol.md: the phone
@@ -52,6 +55,9 @@ internal class FrameServer(
 
         /** The camera settings in use, for the `"ok"` status. */
         fun settings(): JSONObject
+
+        /** Battery and temperature, for status messages. */
+        fun status(): JSONObject
     }
 
     /** Called on the server's threads. */
@@ -195,7 +201,7 @@ internal class FrameServer(
                 else -> return
             }
             if (!begin(socket, computer, output)) return
-            stream(socket, input, output)
+            stream(socket, computer, input, output)
         } catch (_: Exception) {
             // A computer that disconnects only ends its own session.
         } finally {
@@ -214,7 +220,9 @@ internal class FrameServer(
         val hello = readJson(input)
         val id = hello.optString("id").ifBlank { return null }
         val name = hello.optString("name").ifBlank { "Computer" }.take(MAX_NAME)
-        val computer = Computer(id, name, link)
+        val features = hello.optJSONArray("features")
+        val takesStatus = features != null && (0 until features.length()).any { features.optString(it) == "status" }
+        val computer = Computer(id, name, link, takesStatus)
         if (busyFor(id)) {
             send(output, JSONObject().put("status", "busy"))
             return null
@@ -310,10 +318,21 @@ internal class FrameServer(
         return true
     }
 
-    private fun stream(client: Socket, input: DataInputStream, output: DataOutputStream) {
+    private fun stream(client: Socket, computer: Computer, input: DataInputStream, output: DataOutputStream) {
         val reader = frames.Reader()
+        var statusAt = 0L
         while (!client.isClosed) {
             val frame = reader.next { running && isSession(client) } ?: break
+            val now = System.currentTimeMillis()
+            if (computer.status && now - statusAt >= STATUS_INTERVAL_MS) {
+                statusAt = now
+                // A status message: its length has the second highest bit set ("Phone status").
+                val status = phone.status().toString().toByteArray(Charsets.UTF_8)
+                output.writeInt(STATUS_FLAG or status.size)
+                output.write(status)
+                output.flush()
+                readAck(input)
+            }
             pendingPhoto.getAndSet(null)?.let { jpeg ->
                 // A photo message: its length has the highest bit set ("Photos").
                 output.writeInt(PHOTO_FLAG or jpeg.size)
@@ -366,6 +385,7 @@ internal class FrameServer(
             .put("version", phone.version)
             .put("lenses", phone.lenses())
             .put("photo", true)
+            .put("status", true)
             .apply { if (secure != null) put("tls", true) }
 
     private fun answerDiscovery(responder: DatagramSocket) {
@@ -475,6 +495,8 @@ internal class FrameServer(
         private const val OLD_STUDIO_INTERVAL_MS = 5_000L
         private const val FRAME_ACK = 0x06
         private const val PHOTO_FLAG = Int.MIN_VALUE // 0x80000000
+        private const val STATUS_FLAG = 0x4000_0000
+        private const val STATUS_INTERVAL_MS = 5_000L
         private const val MAX_JSON = 16_384
         private const val MAX_PROBE = 2_048
         private const val MAX_NAME = 64

@@ -106,9 +106,21 @@ class Effects:
         self._box: tuple[float, float, float, float] | None = None
         self._face: tuple[float, float, float, float] | None = None
         self._face_seen = 0.0
+        self._size: tuple[int, int] | None = None
 
     def configure(self, settings: EffectSettings) -> None:
         self._settings = settings
+
+    def shown_part(self) -> tuple[float, float, float, float]:
+        """The part of the phone's picture on screen now, as (left, top, width,
+        height) in 0 … 1 of the upright picture: less than all of it while
+        framing zooms in on a face."""
+        box, size = self._box, self._size
+        if box is None or size is None or not self._settings.framing:
+            return 0.0, 0.0, 1.0, 1.0
+        width, height = size
+        left, top, crop_width, crop_height = box
+        return left / width, top / height, crop_width / width, crop_height / height
 
     @property
     def settings(self) -> EffectSettings:
@@ -224,6 +236,7 @@ class Effects:
 
     def _frame(self, picture: Image.Image) -> Image.Image:
         width, height = picture.size
+        self._size = (width, height)
         now = time.monotonic()
         if self._count % DETECT_EVERY == 1 or self._face is None:
             face = self.find_face(picture)
