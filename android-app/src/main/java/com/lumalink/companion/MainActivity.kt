@@ -778,7 +778,9 @@ class MainActivity : ComponentActivity() {
             applyCameraSettings(cameraSettings)
             cameraProblem = null
             render()
-            capture?.let(::takePhoto)
+            // Let focus and exposure settle on the new session before the shot,
+            // or some phones take it dark or blurred.
+            capture?.let { previewView.postDelayed({ if (photoWanted) takePhoto(it) }, PHOTO_SETTLE_MS) }
         } catch (error: Exception) {
             if (capture != null) {
                 // This camera cannot add a photo output: say so, and go back to video only.
@@ -1398,6 +1400,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val PERFORMANCE_LOG_INTERVAL = 30
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
+        private const val PHOTO_SETTLE_MS = 500L
         private const val FRAME_INTERVAL_TOLERANCE = 0.75
         private const val EXTRA_FORCE_COPY = "force_copy"
         private const val EXTRA_HELD_ROTATION = "held_rotation"
