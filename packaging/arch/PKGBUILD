@@ -1,0 +1,50 @@
+# LumaLink Studio for Arch Linux, built from the release's source.
+#
+#     cd packaging/arch && makepkg -si
+#
+# Builds the same bundle as the AppImage and the .deb (PyInstaller, with the
+# project's pinned requirements in a private virtual environment, so it does
+# not depend on the Python packages Arch happens to ship), and installs it in
+# /opt, with a menu entry and the LumaLink Camera v4l2loopback settings.
+# For a new release: change pkgver, then `updpkgsums`.
+
+pkgname=lumalink-studio
+pkgver=0.7.0
+pkgrel=1
+pkgdesc="An Android phone's camera as a webcam"
+arch=('x86_64')
+url="https://tryshyzov.github.io/lumacam/"
+license=('Apache-2.0')
+depends=('glibc' 'libglvnd' 'fontconfig' 'libxkbcommon-x11' 'xcb-util-cursor' 'xcb-util-wm' 'xcb-util-keysyms')
+makedepends=('python')
+optdepends=(
+    'v4l2loopback-dkms: LumaLink Camera, the webcam other apps see'
+    'android-tools: connecting over USB through adb, past a VPN'
+)
+backup=('etc/modprobe.d/lumalink.conf' 'etc/modules-load.d/lumalink.conf')
+install=lumalink-studio.install
+# PyInstaller's bundle carries its own libraries; stripping them breaks it.
+options=('!strip' '!debug')
+source=("lumacam-$pkgver.tar.gz::https://github.com/tryshyzov/lumacam/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('6358d0e24acaa58778b6fea9ecc88171c9186de781d709166aa9ce5626c2084f')
+
+build() {
+    cd "lumacam-$pkgver"
+    python -m venv "$srcdir/venv"
+    "$srcdir/venv/bin/python" -m pip install --quiet -r requirements.txt pyinstaller
+    sed -i "s/^__version__ = .*/__version__ = \"$pkgver\"/" camera_studio/__init__.py
+    "$srcdir/venv/bin/python" -m PyInstaller --noconfirm --clean LumaLinkStudio-linux.spec
+}
+
+package() {
+    cd "lumacam-$pkgver"
+    install -d "$pkgdir/opt" "$pkgdir/usr/bin"
+    cp -a dist/LumaLinkStudio "$pkgdir/opt/lumalink-studio"
+    ln -s /opt/lumalink-studio/LumaLinkStudio "$pkgdir/usr/bin/lumalink-studio"
+    install -Dm644 packaging/linux/lumalink-studio.desktop "$pkgdir/usr/share/applications/lumalink-studio.desktop"
+    install -Dm644 assets/logo/logo-icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/lumalink-studio.svg"
+    install -Dm644 packaging/linux/modprobe-lumalink.conf "$pkgdir/etc/modprobe.d/lumalink.conf"
+    install -d "$pkgdir/etc/modules-load.d"
+    echo v4l2loopback > "$pkgdir/etc/modules-load.d/lumalink.conf"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

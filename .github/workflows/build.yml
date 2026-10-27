@@ -197,6 +197,42 @@ jobs:
             dist/*.deb
           if-no-files-found: error
 
+  # Builds packaging/arch/PKGBUILD from this checkout on Arch Linux, installs
+  # the package and starts the program, so the recipe keeps working there.
+  arch:
+    name: Arch Linux package
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build tools
+        run: >-
+          pacman -Syu --noconfirm --needed base-devel git python
+          fontconfig libglvnd libxkbcommon-x11 xcb-util-cursor xcb-util-wm xcb-util-keysyms
+
+      - uses: actions/checkout@v4
+
+      - name: Build the package
+        run: |
+          useradd -m builder
+          version=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+          work=/home/builder/pkg
+          mkdir -p "$work"
+          git config --global --add safe.directory "$PWD"
+          # The code checked out here, under the name the PKGBUILD downloads.
+          git archive --prefix="lumacam-$version/" -o "$work/lumacam-$version.tar.gz" HEAD
+          cp packaging/arch/PKGBUILD packaging/arch/lumalink-studio.install "$work/"
+          sed -i "s|^sha256sums=.*|sha256sums=('SKIP')|" "$work/PKGBUILD"
+          chown -R builder "$work"
+          su builder -c "cd $work && makepkg --noconfirm"
+
+      - name: Install it and start the program
+        run: |
+          pacman -U --noconfirm /home/builder/pkg/lumalink-studio-*.pkg.tar.zst
+          status=0
+          QT_QPA_PLATFORM=offscreen timeout 8 lumalink-studio || status=$?
+          # 124: still running when the time was up, as it should be.
+          test "$status" -eq 124
+
   android:
     name: Android companion
     runs-on: ubuntu-latest
