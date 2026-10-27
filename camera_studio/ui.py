@@ -14,10 +14,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QSettings, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,8 @@ from camera_studio.pause_frame import (
     paused_frame,
     transition_frame,
 )
+from camera_studio.effects import EffectSettings, Effects
+from camera_studio.look import PRESETS, Look, LookFilter, Overlay, combined, read_cube
 from camera_studio.phones import LINKS, Phone, PhoneFinder, frame_rates, zoom_range
 from camera_studio.stream import (
     H264Decoder,
@@ -54,6 +57,7 @@ from camera_studio.widgets import (
     ICON_MAXIMIZE,
     ICON_MINIMIZE,
     ICON_PAUSE,
+    ICON_PHOTO,
     ICON_PLAY,
     ICON_RESTORE,
     ICON_STATUS_ERROR,
@@ -78,7 +82,7 @@ LINK_NAMES = {"usb": "USB", "adb": "USB (ADB)", "wifi": "Wi-Fi"}
 # After a connection drops, the next try waits this long; after the phone
 # refused, it is left alone for a while unless the user picks it again.
 RETRY_DELAY = 2.0
-REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0}
+REFUSED_PAUSE = {"busy": 10.0, "denied": 30.0, "impostor": 60.0}
 VPN_CHECK_INTERVAL = 10.0
 PANEL_WIDTH = 360
 TITLE_BAR_HEIGHT = 40
@@ -213,7 +217,20 @@ class MainWindow(QWidget):
         self.wait_text = ""
         self.vpn_checked_at = -VPN_CHECK_INTERVAL
         self.finder: PhoneFinder | None = None
+        # The look and the picture over the camera's, applied to every frame
+        # on the network thread; the panel's "Образ" group sets them.
+        self.look_filter = LookFilter()
+        self.effects = Effects()
+        self.effect_image: str | None = None
+        self.overlay: Overlay | None = None
+        self.look_lut: str | None = None
         self._devices_shown: tuple | None = None
+        # Photos: the last request's number, those that arrived, and what to
+        # say about the last one until note_until.
+        self.photo_requests = 0
+        self.photos: queue.Queue[bytes] = queue.Queue()
+        self.photo_note = ""
+        self.photo_note_until = 0.0
         self.virtual_camera: VirtualCameraOutput | None = None
         self.virtual_camera_run = 0
         self.virtual_camera_device = ""
@@ -342,6 +359,11 @@ class MainWindow(QWidget):
         layout.setSpacing(0)
         layout.addStretch(1)
 
+        self.photo_button = self._icon_button(svg_icon(ICON_PHOTO, view=24, size=16, stroke=1.6), icon_size=16)
+        self.photo_button.clicked.connect(self._take_photo)
+        self._bind(self.photo_button.setToolTip, "photo")
+        self._bind(self.photo_button.setAccessibleName, "photo")
+        layout.addWidget(self.photo_button)
         self.pause_button = self._icon_button(self.icons["pause"])
         self.pause_button.clicked.connect(self._toggle_pause)
         layout.addWidget(self.pause_button)
@@ -447,6 +469,72 @@ class MainWindow(QWidget):
         layout.addWidget(holder)
         return holder, value
 
+    def _build_look_group(self, groups: QVBoxLayout) -> None:
+        """Colour correction and a picture over the camera's, for every app."""
+        look = self._group(groups, "look")
+        self.look_select = Select(self)
+        for key in PRESETS:
+            self.look_select.addItem("", key)
+        self.look_select.currentIndexChanged.connect(self._look_changed)
+        self._bind(self.look_select.setAccessibleName, "look_style")
+        self._labeled(look, "look_style", self.look_select)
+        self.look_sliders: dict[str, tuple[Slider, QLabel]] = {}
+        for key in ("brightness", "contrast", "saturation", "warmth"):
+            slider = Slider(-100, 100, 0, self)
+            slider.valueChanged.connect(self._look_changed)
+            low, high = ("look_cooler", "look_warmer") if key == "warmth" else ("look_less", "look_more")
+            _, value = self._slider_field(look, f"look_{key}", slider, low_key=low, high_key=high)
+            self.look_sliders[key] = (slider, value)
+        self.lut_label, self.lut_clear = self._file_row(look, "look_lut", self._pick_lut, self._clear_lut)
+        self.overlay_label, self.overlay_clear = self._file_row(
+            look, "look_overlay", self._pick_overlay, self._clear_overlay
+        )
+        self.look_reset_button = self._text_button("look_reset", self._reset_look)
+        look.addWidget(self.look_reset_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+    def _build_effects_group(self, groups: QVBoxLayout) -> None:
+        """Background blur or a picture behind the person, and face framing."""
+        effects = self._group(groups, "effects")
+        self.background_select = Select(self)
+        for key in ("none", "blur", "image"):
+            self.background_select.addItem("", key)
+        self.background_select.currentIndexChanged.connect(self._effects_changed)
+        self._bind(self.background_select.setAccessibleName, "effects_background")
+        self._labeled(effects, "effects_background", self.background_select)
+        self.blur_slider = Slider(0, 100, 60, self)
+        self.blur_slider.valueChanged.connect(self._effects_changed)
+        self.blur_field, self.blur_value = self._slider_field(
+            effects, "effects_blur", self.blur_slider, low_key="look_less", high_key="look_more"
+        )
+        self.effect_image_label, self.effect_image_clear = self._file_row(
+            effects, "effects_image", self._pick_effect_image, self._clear_effect_image
+        )
+        self.framing_switch = self._switch_row(effects, "effects_framing")
+        self.framing_switch.toggled.connect(self._effects_changed)
+
+    def _text_button(self, key: str, action: Callable[[], None]) -> QPushButton:
+        button = QPushButton(self)
+        button.setObjectName("textButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.clicked.connect(action)
+        self._bind(button.setText, key)
+        return button
+
+    def _file_row(
+        self, layout: QVBoxLayout, key: str, pick: Callable[[], None], clear: Callable[[], None]
+    ) -> tuple[QLabel, QPushButton]:
+        """A button that picks a file, its name, and one that removes it."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self._text_button(key, pick))
+        name = self._label(role="secondary")
+        row.addWidget(name, 1)
+        remove = self._text_button("look_remove", clear)
+        row.addWidget(remove)
+        layout.addLayout(row)
+        return name, remove
+
     def _labeled(self, layout: QVBoxLayout, key: str, widget: QWidget) -> None:
         field = QVBoxLayout()
         field.setSpacing(4)
@@ -545,6 +633,8 @@ class MainWindow(QWidget):
         self._bind(self.reset_button.setText, "reset")
         controls.addWidget(self.reset_button, 0, Qt.AlignmentFlag.AlignLeft)
         groups.addWidget(self.controls)
+        self._build_effects_group(groups)
+        self._build_look_group(groups)
         groups.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll, 1)
@@ -703,11 +793,216 @@ class MainWindow(QWidget):
         self.info_switch.setChecked(self.settings.value("info", False, type=bool))
         self.mirror_switch.setChecked(self.settings.value("mirror", False, type=bool))
         self.adb_switch.setChecked(self.settings.value("adb_fallback", True, type=bool))
+        self._load_look()
+        self._load_effects()
         self._connect_settings()
 
     def _save_option(self, key: str, value: object) -> None:
         self.settings.setValue(key, value)
         self._refresh()
+
+    # ------------------------------------------------------------------ look
+
+    def _load_look(self) -> None:
+        preset = str(self.settings.value("look/preset", "none"))
+        index = self.look_select.findData(preset)
+        self.look_select.blockSignals(True)
+        self.look_select.setCurrentIndex(max(0, index))
+        self.look_select.blockSignals(False)
+        for key, (slider, _value) in self.look_sliders.items():
+            slider.blockSignals(True)
+            slider.setValue(int(self.settings.value(f"look/{key}", 0, type=int)))
+            slider.blockSignals(False)
+        lut = str(self.settings.value("look/lut", ""))
+        self.look_lut = lut if lut and Path(lut).is_file() else None
+        overlay = str(self.settings.value("look/overlay", ""))
+        if overlay and Path(overlay).is_file():
+            try:
+                self.overlay = Overlay(overlay)
+            except OSError:
+                self.overlay = None
+        self._look_changed()
+
+    def _load_effects(self) -> None:
+        for widget in (self.background_select, self.blur_slider, self.framing_switch):
+            widget.blockSignals(True)
+        index = self.background_select.findData(str(self.settings.value("effects/background", "none")))
+        self.background_select.setCurrentIndex(max(0, index))
+        self.blur_slider.setValue(int(self.settings.value("effects/blur", 60, type=int)))
+        self.framing_switch.setChecked(self.settings.value("effects/framing", False, type=bool))
+        image = str(self.settings.value("effects/image", ""))
+        self.effect_image = image if image and Path(image).is_file() else None
+        for widget in (self.background_select, self.blur_slider, self.framing_switch):
+            widget.blockSignals(False)
+        self._effects_changed()
+
+    def current_effects(self) -> EffectSettings:
+        return EffectSettings(
+            background=str(self.background_select.currentData() or "none"),
+            blur=self.blur_slider.value() / 100,
+            image=self.effect_image,
+            framing=self.framing_switch.isChecked(),
+        )
+
+    def _effects_changed(self, *_args: object) -> None:
+        settings = self.current_effects()
+        self.effects.configure(settings)
+        self.blur_field.setVisible(settings.background == "blur")
+        self.blur_value.setText(f"{self.blur_slider.value()}%")
+        self.settings.setValue("effects/background", settings.background)
+        self.settings.setValue("effects/blur", self.blur_slider.value())
+        self.settings.setValue("effects/framing", settings.framing)
+        self.settings.setValue("effects/image", self.effect_image or "")
+        if hasattr(self, "effect_image_label"):
+            self.effect_image_label.setText(Path(self.effect_image).name if self.effect_image else self.t("look_no_file"))
+            self.effect_image_clear.setVisible(self.effect_image is not None)
+
+    def _pick_effect_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("effects_image"), "", "Pictures (*.png *.jpg *.jpeg)")
+        if not path:
+            return
+        self.effect_image = path
+        self.background_select.setCurrentIndex(self.background_select.findData("image"))
+        self._effects_changed()
+
+    def _clear_effect_image(self) -> None:
+        self.effect_image = None
+        if self.background_select.currentData() == "image":
+            self.background_select.setCurrentIndex(0)
+        self._effects_changed()
+
+    def current_look(self) -> Look:
+        own = Look(
+            lut=self.look_lut,
+            **{key: slider.value() / 100 for key, (slider, _value) in self.look_sliders.items()},
+        )
+        return combined(str(self.look_select.currentData() or "none"), own)
+
+    def _look_changed(self, *_args: object) -> None:
+        self.look_filter.set_look(self.current_look())
+        for key, (slider, value) in self.look_sliders.items():
+            number = slider.value()
+            value.setText(f"+{number}" if number > 0 else "−" + str(-number) if number < 0 else "0")
+            self.settings.setValue(f"look/{key}", number)
+        self.settings.setValue("look/preset", self.look_select.currentData() or "none")
+        self.settings.setValue("look/lut", self.look_lut or "")
+        self.settings.setValue("look/overlay", self.overlay.path if self.overlay else "")
+        self._show_look_files()
+
+    def _show_look_files(self) -> None:
+        if not hasattr(self, "lut_label"):
+            return
+        for label, button, path in (
+            (self.lut_label, self.lut_clear, self.look_lut),
+            (self.overlay_label, self.overlay_clear, self.overlay.path if self.overlay else None),
+        ):
+            label.setText(Path(path).name if path else self.t("look_no_file"))
+            button.setVisible(path is not None)
+
+    def _pick_lut(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("look_lut"), "", "LUT (*.cube)")
+        if not path:
+            return
+        try:
+            read_cube(path)
+        except (OSError, ValueError) as error:
+            self.lut_label.setText(self.t("look_bad_file", error=error))
+            return
+        self.look_lut = path
+        self._look_changed()
+
+    def _clear_lut(self) -> None:
+        self.look_lut = None
+        self._look_changed()
+
+    def _pick_overlay(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.t("look_overlay"), "", "PNG (*.png)")
+        if not path:
+            return
+        try:
+            self.overlay = Overlay(path)
+        except OSError as error:
+            self.overlay_label.setText(self.t("look_bad_file", error=error))
+            return
+        self._look_changed()
+
+    def _clear_overlay(self) -> None:
+        self.overlay = None
+        self._look_changed()
+
+    def _reset_look(self) -> None:
+        self.look_select.setCurrentIndex(0)
+        for slider, _value in self.look_sliders.values():
+            slider.setValue(0)
+        self.look_lut = None
+        self.overlay = None
+        self._look_changed()
+
+    def _styled(self, decoded):
+        """The decoded frame with the look and the picture over it; as it was if they fail."""
+        try:
+            decoded = self.effects.apply(decoded)
+        except Exception as error:  # a model that fails must not stop the video
+            print(f"Effects failed: {error}", file=sys.stderr)
+            self.effects.configure(EffectSettings())
+        try:
+            decoded = self.look_filter.apply(decoded)
+            overlay = self.overlay
+            if overlay is not None:
+                decoded = overlay.apply(decoded)
+        except Exception as error:  # a bad LUT must not stop the video
+            print(f"Look failed: {error}", file=sys.stderr)
+            self.look_filter.set_look(Look())
+        return decoded
+
+    # ---------------------------------------------------------------- photos
+
+    def _phone_takes_photos(self) -> bool:
+        if self.camera_info is not None:
+            return self.camera_info.get("photo") is True
+        return self.phone is not None and self.phone.photo
+
+    def _take_photo(self) -> None:
+        if not self.camera_connected or self.receiver is None or not self._phone_takes_photos():
+            return
+        self.photo_requests += 1
+        command = self.camera_command()
+        command["photo"] = self.photo_requests
+        try:
+            self.receiver.send_control(command)
+        except (OSError, ConnectionError):
+            return
+        self._say_about_photo(self.t("photo_taking"))
+
+    def _say_about_photo(self, text: str, seconds: float = 6.0) -> None:
+        self.photo_note = text
+        self.photo_note_until = time.monotonic() + seconds
+        QTimer.singleShot(int(seconds * 1000) + 50, self._refresh)
+        self._refresh()
+
+    @staticmethod
+    def photo_folder() -> Path:
+        pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        return Path(pictures or Path.home()) / "LumaLink"
+
+    def _save_photo(self, jpeg: bytes) -> None:
+        if not jpeg:
+            self._say_about_photo(self.t("photo_failed"))
+            return
+        folder = self.photo_folder()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y-%m-%d %H.%M.%S")
+            path = folder / f"LumaLink {stamp}.jpg"
+            number = 2
+            while path.exists():
+                path = folder / f"LumaLink {stamp} ({number}).jpg"
+                number += 1
+            path.write_bytes(jpeg)
+        except OSError as error:
+            self._say_about_photo(self.t("photo_not_saved", error=error))
+            return
+        self._say_about_photo(self.t("photo_saved", name=path.name, folder=folder))
 
     def _select_language(self, language: str) -> None:
         self.language = language
@@ -725,6 +1020,11 @@ class MainWindow(QWidget):
         self.lens_seg.set_labels({"rear": self.t("rear"), "front": self.t("front")})
         for index, (key, _token) in enumerate(PHONE_WHITE_BALANCE):
             self.white_balance_select.setItemText(index, self.t(key))
+        for index, key in enumerate(PRESETS):
+            self.look_select.setItemText(index, self.t(f"look_{key}"))
+        for index, key in enumerate(("none", "blur", "image")):
+            self.background_select.setItemText(index, self.t(f"effects_{key}"))
+        self._show_look_files()
         for index, (resolution, fps, size) in enumerate(PROFILES):
             self.profile_actions[index].setText(
                 f"{resolution}, {fps} {self.t('fps_unit')}\t{size}"
@@ -782,8 +1082,10 @@ class MainWindow(QWidget):
             self.connect_button.style().unpolish(self.connect_button)
             self.connect_button.style().polish(self.connect_button)
 
-        if connected:
-            hint = self.t("hint_wifi") if self.phone is not None and self.phone.link == "wifi" else ""
+        if connected and self.phone is not None and self.phone.link == "wifi":
+            hint = self.t("hint_wifi_encrypted" if self.phone.tls else "hint_wifi")
+        elif connected:
+            hint = ""
         elif self.vpn_blocks_lan:
             hint = self.t("hint_usb_vpn")
         else:
@@ -806,6 +1108,7 @@ class MainWindow(QWidget):
 
         paused = connected and self.paused
         self.pause_button.setEnabled(connected)
+        self.photo_button.setEnabled(connected and self._phone_takes_photos())
         self.pause_button.setIcon(self.icons["play" if paused else "pause"])
         pause_name = self.t("resume" if paused else "pause")
         self.pause_button.setToolTip(pause_name)
@@ -815,7 +1118,9 @@ class MainWindow(QWidget):
         self.preview.empty_text = self.t("empty_text")
         self.preview.show_grid = self.grid_switch.isChecked() and not paused
         self.preview.mirrored = self.mirror_switch.isChecked()
-        if paused:
+        if self.photo_note and time.monotonic() < self.photo_note_until:
+            self.preview.note = self.photo_note
+        elif paused:
             self.preview.note = self.t("paused_note")
         elif connected and self.info_switch.isChecked() and self.frame_size[0]:
             width, height = self.frame_size
@@ -1050,6 +1355,7 @@ class MainWindow(QWidget):
         self.connection_run += 1
         run = self.connection_run
         token = str(self.settings.value(f"tokens/{self._phone_id(phone)}", ""))
+        known = str(self.settings.value(f"pins/{self._phone_id(phone)}", "")) or None
         self.receiver = H264FrameReceiver(
             None,
             STREAM_PORT,
@@ -1060,6 +1366,10 @@ class MainWindow(QWidget):
             hello={**self.computer, "token": token},
             on_accepted=lambda status: self.accepted.put((run, status)),
             on_refused=lambda error: self.refusals.put((run, error)),
+            on_photo=self.photos.put,
+            # Over Wi-Fi even when the phone offers no encryption: one known
+            # to encrypt that stops is turned down (see H264FrameReceiver).
+            known_fingerprint=known if phone.link == "wifi" else None,
         )
         self.streaming = True
         self.receiver.start()
@@ -1075,6 +1385,9 @@ class MainWindow(QWidget):
             self.settings.setValue(f"adb_ids/{self.phone.serial}", phone_id)
         if isinstance(status.get("token"), str) and status["token"]:
             self.settings.setValue(f"tokens/{phone_id}", status["token"])
+        if isinstance(status.get("fingerprint"), str):
+            # The phone's key, to tell it from a device posing as it later.
+            self.settings.setValue(f"pins/{phone_id}", status["fingerprint"])
         self.settings.setValue("phone_id", phone_id)
         self.wait_text = ""
         self._apply_zoom_range()
@@ -1118,6 +1431,7 @@ class MainWindow(QWidget):
         if not self.streaming:
             return
         for decoded in self.decoder.decode(frame):
+            decoded = self._styled(decoded)
             image = correct_stream_orientation(decoded.to_image())
             virtual_camera = self.virtual_camera
             if self.paused:
@@ -1252,6 +1566,12 @@ class MainWindow(QWidget):
 
         while True:
             try:
+                jpeg = self.photos.get_nowait()
+            except queue.Empty:
+                break
+            self._save_photo(jpeg)
+        while True:
+            try:
                 phones = self.phone_lists.get_nowait()
             except queue.Empty:
                 break
@@ -1283,7 +1603,8 @@ class MainWindow(QWidget):
             changed = True
             if not is_error:
                 if message.startswith("Разрешите"):
-                    self.wait_text = self.t("status_allow")
+                    code = message.partition("Код: ")[2]
+                    self.wait_text = self.t("status_allow_code", code=code) if code else self.t("status_allow")
                 continue
             self.error_text = message
             self._forget_camera()

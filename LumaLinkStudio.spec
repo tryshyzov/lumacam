@@ -9,7 +9,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=adb_binaries,
-    datas=[('assets/LumaCam.png', 'assets')],
+    datas=[('assets/LumaCam.png', 'assets'), ('assets/models', 'assets/models')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -1,6 +1,7 @@
 import os
 import string
 import tempfile
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -72,8 +73,11 @@ class FakePhoneReceiver(FakeReceiver):
     instances: list["FakePhoneReceiver"] = []
 
     def __init__(self, host, port, on_frame, on_status, usb, adb_fallback=True,
-                 phone=None, hello=None, on_accepted=None, on_refused=None) -> None:
+                 phone=None, hello=None, on_accepted=None, on_refused=None,
+                 known_fingerprint=None, on_photo=None) -> None:
         super().__init__()
+        self.known_fingerprint = known_fingerprint
+        self.on_photo = on_photo
         self.phone = phone
         self.hello = hello
         self.on_status = on_status
@@ -444,6 +448,25 @@ class MainWindowTests(unittest.TestCase):
         enabled = [action.isEnabled() for action in window.profile_actions]
         self.assertEqual(enabled, [True, True, False, True, True])
 
+    def test_keeps_an_encrypted_phones_key_and_shows_the_pairing_code(self) -> None:
+        wifi = Phone(id="p2", name="Pixel", link="wifi", address="10.0.0.3", version="0.7.0", tls=True)
+        self.find(wifi)
+        self.window.device_select.activated.emit(0)
+        receiver = FakePhoneReceiver.instances[0]
+        self.assertIsNone(receiver.known_fingerprint)
+        receiver.on_status("Разрешите подключение на экране телефона. Код: 300 879", False)
+        self.window._poll_stream()
+        self.assertIn("300 879", self.window.status_label.text())
+
+        receiver.on_accepted({"status": "ok", "token": "t-2", "fingerprint": "ab" * 32, "camera": {"id": "p2"}})
+        self.window._poll_stream()
+        self.assertEqual(self.window.settings.value("pins/p2"), "ab" * 32)
+
+        # The next connection checks the phone against that key.
+        self.window._disconnect()
+        self.window.device_select.activated.emit(0)
+        self.assertEqual(FakePhoneReceiver.instances[-1].known_fingerprint, "ab" * 32)
+
     def test_reconnects_after_a_drop_and_ignores_the_old_connection(self) -> None:
         usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.6.0")
         self.find(usb)
@@ -483,6 +506,54 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(len(FakePhoneReceiver.instances), 1)
         self.window._toggle_connection()
         self.assertEqual(len(FakePhoneReceiver.instances), 2)
+
+    def test_the_look_styles_frames_and_survives_a_restart(self) -> None:
+        window = self.window
+        window.look_select.setCurrentIndex(window.look_select.findData("mono"))
+        window.look_sliders["contrast"][0].setValue(30)
+        decoded = av.VideoFrame.from_image(Image.new("RGB", (64, 36), (200, 40, 40))).reformat(format="yuv420p")
+        for _ in range(2):
+            styled = window._styled(decoded)
+        r, g, b = styled.to_image().getpixel((32, 18))
+        self.assertLessEqual(max(r, g, b) - min(r, g, b), 3)
+        self.assertEqual(window.look_sliders["contrast"][1].text(), "+30")
+        window.settings.sync()
+
+        reopened = self.new_window()
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.look_select.currentData(), "mono")
+        self.assertEqual(reopened.look_sliders["contrast"][0].value(), 30)
+
+        reopened._reset_look()
+        self.assertTrue(reopened.current_look().neutral)
+
+    def test_takes_a_photo_and_saves_it_in_pictures(self) -> None:
+        usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.7.0", photo=True)
+        self.find(usb)
+        receiver = FakePhoneReceiver.instances[0]
+        receiver.on_accepted({"status": "ok", "camera": {"id": "p1", "photo": True}})
+        self.window.receiver = receiver
+        self.show_frame((10, 20, 30))
+        self.assertTrue(self.window.photo_button.isEnabled())
+
+        self.window._take_photo()
+        self.window._take_photo()
+        self.assertEqual([c.get("photo") for c in receiver.commands][-2:], [1, 2])
+
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(
+            ui.MainWindow, "photo_folder", staticmethod(lambda: Path(folder))
+        ):
+            receiver.on_photo(b"\xff\xd8jpeg\xff\xd9")
+            receiver.on_photo(b"\xff\xd8jpeg\xff\xd9")
+            self.window._poll_stream()
+            saved = sorted(Path(folder).glob("*.jpg"))
+            self.assertEqual(len(saved), 2)
+            self.assertEqual(saved[0].read_bytes(), b"\xff\xd8jpeg\xff\xd9")
+        self.assertIn("Снимок сохранён", self.window.preview.note)
+
+        receiver.on_photo(b"")
+        self.window._poll_stream()
+        self.assertEqual(self.window.preview.note, "Телефон не смог сделать снимок")
 
     def test_settings_survive_a_restart(self) -> None:
         self.window._select_language("en")

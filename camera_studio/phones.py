@@ -10,6 +10,7 @@ listed without a name.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import select
 import socket
@@ -50,6 +51,8 @@ class Phone:
     serial: str | None = None  # the ADB serial, for "adb"
     version: str | None = None  # None: a version 1 phone
     lenses: dict = field(default_factory=dict, compare=False, hash=False)
+    tls: bool = False  # Wi-Fi connections go inside TLS ("Encrypted Wi-Fi")
+    photo: bool = False  # takes full resolution photos on request ("Photos")
 
     @property
     def key(self) -> str:
@@ -83,7 +86,21 @@ def parse_reply(reply: bytes, sender: str) -> Phone | None:
         address=sender,
         version=str(info.get("version") or "2"),
         lenses=lenses,
+        tls=info.get("tls") is True,
+        photo=info.get("photo") is True,
     )
+
+
+def fingerprint(certificate: bytes) -> str:
+    """A phone's fingerprint: SHA-256 over its certificate's DER, in hex."""
+    return hashlib.sha256(certificate).hexdigest()
+
+
+def pairing_code(certificate: bytes, computer_id: str) -> str:
+    """The six digits phone and computer both show while the user allows it."""
+    digest = hashlib.sha256(certificate + computer_id.encode("utf-8")).digest()
+    number = int.from_bytes(digest[:4], "big") % 1_000_000
+    return f"{number // 1000:03d} {number % 1000:03d}"
 
 
 def zoom_range(phone: Phone | None, lens: str) -> tuple[float, float]:
