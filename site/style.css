@@ -265,9 +265,18 @@ h3 {
 
 .downloads {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 20px;
 }
+
+.download .alt-link {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.download .alt-link:hover { color: var(--text); }
 
 .download {
   display: flex;

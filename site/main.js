@@ -13,7 +13,7 @@ const EN = {
   hero_lead: "Connect an Android phone over USB or Wi-Fi and use its camera in Zoom, Telegram, Discord and OBS. Focus, exposure, ISO and white balance, right from your computer.",
   hero_cta: "Download",
   hero_source: "Source code",
-  hero_platforms: "Windows 10/11 · macOS 13+ (Apple silicon and Intel) · Android 8+",
+  hero_platforms: "Windows 10/11 · macOS 13+ (Apple silicon and Intel) · Linux · Android 8+",
   shot_alt: "LumaLink Studio window with the camera settings",
   how_title: "How it works",
   step1_title: "The phone films",
@@ -42,6 +42,8 @@ const EN = {
   dl_mac_arm: "M1 or later. macOS 13 Ventura or later.",
   dl_mac_intel_title: "Mac with Intel",
   dl_mac_intel: "macOS 13 Ventura or later.",
+  dl_linux: "x86-64, Ubuntu 22.04 or later. The virtual camera works through v4l2loopback.",
+  dl_linux_deb: ".deb package",
   dl_android_title: "Android phone",
   dl_android: "LumaLink Companion. Android 8.0 or later.",
   dl_button: "Download",
@@ -117,6 +119,7 @@ function suggestedAsset() {
   const ua = navigator.userAgent;
   if (/Android/i.test(ua)) return "android";
   if (/Windows/i.test(ua)) return "windows";
+  if (/Linux/i.test(ua)) return "linux";
   return null;
 }
 
@@ -124,6 +127,8 @@ const ASSETS = {
   windows: /Setup.*\.exe$/i,
   "mac-arm": /macos-apple-silicon\.dmg$/i,
   "mac-intel": /macos-intel\.dmg$/i,
+  linux: /x86_64\.AppImage$/i,
+  "linux-deb": /_amd64\.deb$/i,
   android: /\.apk$/i,
 };
 
@@ -147,6 +152,12 @@ function showRelease() {
       link.classList.add("disabled");
       link.textContent = t("dl_soon");
       addNote(card, t("dl_soon_note"));
+    }
+    // Second files in a card, such as the .deb next to the AppImage.
+    for (const extra of card.querySelectorAll("[data-asset-link]")) {
+      const found = release?.assets.find((item) => ASSETS[extra.dataset.assetLink].test(item.name));
+      extra.href = found ? found.browser_download_url : RELEASES;
+      extra.hidden = Boolean(release) && !found;
     }
   }
 }
