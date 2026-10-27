@@ -233,6 +233,28 @@ class EncryptedWifiTests(unittest.TestCase):
         self.assertEqual((refused[0].status, frames, accepted), ("impostor", [], []))
         self.assertIn("не тот телефон", statuses[-1][0])
 
+    def test_a_known_phone_that_stops_encrypting_gets_nothing(self) -> None:
+        from camera_studio.phones import fingerprint
+        from camera_studio.stream import H264FrameReceiver
+
+        # Answers like a phone without "tls": plain version 2.
+        server = FakePhoneServer(version_2({"status": "ok", "camera": {"id": "p1"}}))
+        self.addCleanup(server.close)
+        refused, statuses = [], []
+        finished = threading.Event()
+        phone = Phone(id="p1", name="Redmi", link="wifi", address="127.0.0.1", version="0.6.0", tls=False)
+        receiver = H264FrameReceiver(
+            None, server.port, lambda frame: None,
+            lambda text, error: (statuses.append(text), finished.set() if error else None),
+            usb=False, phone=phone, hello=self.hello, on_refused=refused.append,
+            known_fingerprint=fingerprint(self.certificate()),
+        )
+        receiver.start()
+        self.addCleanup(receiver.stop)
+        self.assertTrue(finished.wait(5))
+        self.assertEqual(server.hellos, [])
+        self.assertEqual(refused[0].status, "impostor")
+
     def test_pairing_code_has_six_digits_in_two_groups(self) -> None:
         from camera_studio.phones import pairing_code
 

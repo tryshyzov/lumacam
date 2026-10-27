@@ -352,6 +352,9 @@ that `id` and they differ, it closes the connection and tells the user
 another device is posing as the phone. When it knows none, this is the
 first time: it sends the hello with an empty token, and keeps the
 fingerprint once the phone answers `"ok"`.
+A phone `id` with a known fingerprint that answers discovery without
+`"tls"` gets no connection at all: that would be a device posing as it,
+after the token in plain text.
 
 **The pairing code.** While the phone asks its user to allow the computer,
 both show the same six-digit code, so the user can tell a device in

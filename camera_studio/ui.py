@@ -1128,7 +1128,9 @@ class MainWindow(QWidget):
             on_accepted=lambda status: self.accepted.put((run, status)),
             on_refused=lambda error: self.refusals.put((run, error)),
             on_photo=self.photos.put,
-            known_fingerprint=known if phone.link == "wifi" and phone.tls else None,
+            # Over Wi-Fi even when the phone offers no encryption: one known
+            # to encrypt that stops is turned down (see H264FrameReceiver).
+            known_fingerprint=known if phone.link == "wifi" else None,
         )
         self.streaming = True
         self.receiver.start()

@@ -772,6 +772,14 @@ class H264FrameReceiver:
                 if phone.link == "wifi" and getattr(phone, "tls", False):
                     connection = self._wrap_tls(connection)
                     self._connection = connection
+                elif phone.link == "wifi" and self._known_fingerprint is not None:
+                    # A phone known to encrypt now offers no encryption: a
+                    # device posing as it, after the token in plain text.
+                    raise PhoneRefused(
+                        "Это не тот телефон: другое устройство представляется им "
+                        "и не шифрует подключение. Подключение остановлено, пропуск не отправлен",
+                        "impostor",
+                    )
                 if version == 2:
                     self._shake_hands_v2(connection)
                 else:
