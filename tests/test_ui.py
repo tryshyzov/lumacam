@@ -507,6 +507,26 @@ class MainWindowTests(unittest.TestCase):
         self.window._toggle_connection()
         self.assertEqual(len(FakePhoneReceiver.instances), 2)
 
+    def test_the_look_styles_frames_and_survives_a_restart(self) -> None:
+        window = self.window
+        window.look_select.setCurrentIndex(window.look_select.findData("mono"))
+        window.look_sliders["contrast"][0].setValue(30)
+        decoded = av.VideoFrame.from_image(Image.new("RGB", (64, 36), (200, 40, 40))).reformat(format="yuv420p")
+        for _ in range(2):
+            styled = window._styled(decoded)
+        r, g, b = styled.to_image().getpixel((32, 18))
+        self.assertLessEqual(max(r, g, b) - min(r, g, b), 3)
+        self.assertEqual(window.look_sliders["contrast"][1].text(), "+30")
+        window.settings.sync()
+
+        reopened = self.new_window()
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.look_select.currentData(), "mono")
+        self.assertEqual(reopened.look_sliders["contrast"][0].value(), 30)
+
+        reopened._reset_look()
+        self.assertTrue(reopened.current_look().neutral)
+
     def test_takes_a_photo_and_saves_it_in_pictures(self) -> None:
         usb = Phone(id="p1", name="Redmi", link="usb", address="192.168.42.129", version="0.7.0", photo=True)
         self.find(usb)
