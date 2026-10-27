@@ -3,6 +3,7 @@ package com.lumalink.companion
 import android.Manifest
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -10,6 +11,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -18,6 +20,7 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.OrientationEventListener
 import android.view.Surface
 import android.view.View
@@ -37,11 +40,13 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -49,6 +54,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.pow
 import org.json.JSONArray
@@ -68,6 +74,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsPanel: LinearLayout
     private lateinit var languageControl: SegmentedControl
     private lateinit var keepAwakeToggle: ToggleView
+    private lateinit var dimToggle: ToggleView
+    private lateinit var dimCover: FrameLayout
+    private var dimmed = false
+    private val dimNow = Runnable { setDimmed(true) }
     private lateinit var settingsBack: OnBackPressedCallback
     private lateinit var computersList: LinearLayout
     private lateinit var updateBanner: LinearLayout
@@ -110,6 +120,7 @@ class MainActivity : ComponentActivity() {
      */
     private var photoWanted = false
     private var lastPhotoRequest = 0L
+    private var lastMeterRequest = 0L
     private var copyingAnalysisUseCase: ImageAnalysis? = null
 
     /** Which way up the phone is held (see [HeldRotation]); the video follows it. */
@@ -389,6 +400,29 @@ class MainActivity : ComponentActivity() {
 
         buildSettings(root)
 
+        // Over everything while streaming untouched: black, the backlight down.
+        dimCover = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+        }
+        val dimHint = label(12f, Palette.TEXT_SECONDARY).apply {
+            gravity = Gravity.CENTER
+            alpha = 0.5f
+        }
+        translate("dimHint") { dimHint.text = it }
+        dimCover.addView(
+            dimHint,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER,
+            ),
+        )
+        root.addView(
+            dimCover,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT),
+        )
+
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val keyboard = insets.getInsets(WindowInsetsCompat.Type.ime())
@@ -484,6 +518,25 @@ class MainActivity : ComponentActivity() {
         translate("keepAwake") { keepAwakeToggle.contentDescription = it }
         awakeRow.addView(keepAwakeToggle)
         settingsPanel.addView(awakeRow, matchWidth(6))
+
+        val dimRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(32)
+        }
+        val dimLabel = label(13f)
+        translate("dimScreen") { dimLabel.text = it }
+        dimRow.addView(dimLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        dimToggle = ToggleView(this).apply {
+            isOn = preferences.getBoolean(KEY_DIM_SCREEN, true)
+            onToggle = { on ->
+                preferences.edit().putBoolean(KEY_DIM_SCREEN, on).apply()
+                render()
+            }
+        }
+        translate("dimScreen") { dimToggle.contentDescription = it }
+        dimRow.addView(dimToggle)
+        settingsPanel.addView(dimRow, matchWidth(6))
 
         settingsPanel.addView(groupTitle("computers"), matchWidth(14))
         computersList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -673,6 +726,41 @@ class MainActivity : ComponentActivity() {
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        scheduleDim()
+    }
+
+    /** Start the wait before the screen dims, or stop dimming when it should not. */
+    private fun scheduleDim() {
+        if (!::dimCover.isInitialized) return
+        dimCover.removeCallbacks(dimNow)
+        if (streaming() && dimToggle.isOn) {
+            if (!dimmed) dimCover.postDelayed(dimNow, DIM_AFTER_MS)
+        } else {
+            setDimmed(false)
+        }
+    }
+
+    private fun setDimmed(on: Boolean) {
+        if (dimmed == on) return
+        dimmed = on
+        dimCover.visibility = if (on) View.VISIBLE else View.GONE
+        window.attributes = window.attributes.apply {
+            screenBrightness = if (on) DIM_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (!::dimCover.isInitialized) return super.dispatchTouchEvent(event)
+        if (dimmed) {
+            // The touch that wakes the screen does nothing else.
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                setDimmed(false)
+                scheduleDim()
+            }
+            return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) scheduleDim()
+        return super.dispatchTouchEvent(event)
     }
 
     private fun showNotice(message: String) {
@@ -970,6 +1058,8 @@ class MainActivity : ComponentActivity() {
         try {
             val photo = command.optLong("photo", 0L)
             command.remove("photo")
+            val meter = command.optJSONObject("meter")
+            command.remove("meter")
             if (photo > lastPhotoRequest) {
                 lastPhotoRequest = photo
                 if (!photoWanted) {
@@ -1002,14 +1092,44 @@ class MainActivity : ComponentActivity() {
                 needsRebind = plan.moduleFor(zoom, bound) != bound
             }
             if (needsRebind) bindCamera() else applyCameraSettings(cameraSettings)
+            val meterId = meter?.optLong("id", 0L) ?: 0L
+            if (meter != null && meterId > lastMeterRequest) {
+                lastMeterRequest = meterId
+                focusAt(meter.optDouble("x", 0.5).toFloat(), meter.optDouble("y", 0.5).toFloat())
+            }
         } catch (error: Exception) {
             Log.e(TAG, "Could not apply camera settings", error)
             showNotice(t("settingsFailed", error.localizedMessage))
         }
     }
 
+    /**
+     * Focus, and set the exposure, at a point of the picture the computer
+     * shows ("meter"); the camera goes back to its own choice after a while.
+     */
+    private fun focusAt(x: Float, y: Float) {
+        val camera = activeCamera ?: return
+        val streamDegrees = camera.cameraInfo.getSensorRotationDegrees(HeldRotation.streamTarget(heldRotation))
+        val (u, v) = MeterPoint.inBuffer(x, y, MeterPoint.shownDegrees(streamDegrees))
+        val point = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(u, v)
+        // With manual focus the lens stays put; only the exposure follows the point.
+        val flags = if (cameraSettings.optBoolean("autofocus", true)) {
+            FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+        } else {
+            FocusMeteringAction.FLAG_AE
+        }
+        val action = FocusMeteringAction.Builder(point, flags)
+            .setAutoCancelDuration(METER_HOLD_SECONDS, TimeUnit.SECONDS)
+            .build()
+        if (!camera.cameraInfo.isFocusMeteringSupported(action)) return
+        camera.cameraControl.startFocusAndMetering(action)
+    }
+
     private fun applyCameraSettings(command: JSONObject) {
         val camera = activeCamera ?: return
+        if (camera.cameraInfo.hasFlashUnit()) {
+            camera.cameraControl.enableTorch(command.optBoolean("torch", false))
+        }
         val cameraInfo = Camera2CameraInfo.from(camera.cameraInfo)
         val options = CaptureRequestOptions.Builder()
         val autofocus = command.optBoolean("autofocus", true)
@@ -1176,10 +1296,12 @@ class MainActivity : ComponentActivity() {
         )) {
             val range = CameraModules.plan(provider.availableCameraInfos, facing, size)?.range ?: continue
             val main = provider.availableCameraInfos.first { it.lensFacing == facing }
+            val torch = provider.availableCameraInfos.any { it.lensFacing == facing && it.hasFlashUnit() }
             lenses.put(
                 token,
                 JSONObject()
                     .put("zoom", JSONArray().put(round2(range.start)).put(round2(range.endInclusive)))
+                    .put("torch", torch)
                     // Every resolution at once: discovery and "ok" are not sent
                     // again when the computer switches resolution.
                     .put("fps", JSONObject().apply {
@@ -1344,13 +1466,28 @@ class MainActivity : ComponentActivity() {
         override fun lenses(): JSONObject = lensesSnapshot
 
         override fun settings(): JSONObject = settingsSnapshot
+
+        override fun status(): JSONObject {
+            // The battery's last broadcast, kept by the system; no receiver needed.
+            val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                ?: return JSONObject()
+            val level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            val scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            val tenths = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+            return JSONObject().apply {
+                if (level >= 0 && scale > 0) put("battery", level * 100 / scale)
+                put("charging", battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0)
+                if (tenths != Int.MIN_VALUE) put("temperature", tenths / 10.0)
+            }
+        }
     }
 
     private val serverEvents = object : FrameServer.Events {
         override fun streaming(computer: Computer?) {
             runOnUiThread {
                 connected = computer
-                lastPhotoRequest = 0L // photo numbers count per connection
+                lastPhotoRequest = 0L // photo and focus point numbers count per connection
+                lastMeterRequest = 0L
                 if (computer == null) {
                     deliveredFps = 0
                     rateWindowStartedAt = 0L
@@ -1407,6 +1544,7 @@ class MainActivity : ComponentActivity() {
         private const val PERFORMANCE_LOG_INTERVAL = 30
         private const val KEY_FRAME_REQUEST_INTERVAL_MS = 300L
         private const val PHOTO_SETTLE_MS = 500L
+        private const val METER_HOLD_SECONDS = 5L
         private const val FRAME_INTERVAL_TOLERANCE = 0.75
         private const val EXTRA_FORCE_COPY = "force_copy"
         private const val EXTRA_HELD_ROTATION = "held_rotation"
@@ -1429,6 +1567,9 @@ class MainActivity : ComponentActivity() {
         private const val PREFERENCES = "settings"
         private const val KEY_LANGUAGE = "language"
         private const val KEY_KEEP_AWAKE = "keep_awake"
+        private const val KEY_DIM_SCREEN = "dim_screen"
+        private const val DIM_AFTER_MS = 15_000L
+        private const val DIM_BRIGHTNESS = 0.01f
         private const val TAG = "LumaLink"
     }
 }
