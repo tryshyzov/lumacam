@@ -40,6 +40,9 @@ STUDIO_DISCOVERY_PORT = 8767
 STUDIO_DISCOVERY_REQUEST = b"LUMALINK-FIND-STUDIO-1"
 STUDIO_DISCOVERY_REPLY = b"LUMALINK-STUDIO-1"
 MAX_FRAME_SIZE = 4_000_000
+# A photo message's length has its highest bit set (docs/protocol.md, "Photos").
+PHOTO_FLAG = 0x8000_0000
+MAX_PHOTO_SIZE = 32_000_000
 LAN_PROBE_PORT = 9
 WSAEACCES = 10013
 
@@ -243,6 +246,20 @@ def correct_stream_orientation(image: Image.Image) -> Image.Image:
 
 def encode_control_payload(command: dict[str, object]) -> bytes:
     return json.dumps(command, separators=(",", ":")).encode("utf-8")
+
+
+def read_message(stream: BinaryIO | _SocketReader) -> tuple[bool, bytes]:
+    """The next message from the phone: (True, JPEG) for a photo, else (False, a frame)."""
+    header = _read_exactly(stream, 4, "Заголовок H.264-пакета получен не полностью")
+    content_length = struct.unpack("!I", header)[0]
+    if content_length & PHOTO_FLAG:
+        size = content_length & ~PHOTO_FLAG
+        if size > MAX_PHOTO_SIZE:
+            raise ValueError("Недопустимый размер снимка")
+        return True, _read_exactly(stream, size, "Снимок получен не полностью") if size else b""
+    if content_length <= 0 or content_length > MAX_FRAME_SIZE:
+        raise ValueError("Недопустимый размер H.264-пакета")
+    return False, _read_exactly(stream, content_length, "H.264-пакет получен не полностью")
 
 
 def read_video_packet(stream: BinaryIO | _SocketReader) -> bytes:
@@ -536,7 +553,9 @@ class H264FrameReceiver:
         on_accepted: Callable[[dict], None] | None = None,
         on_refused: Callable[[PhoneRefused], None] | None = None,
         known_fingerprint: str | None = None,
+        on_photo: Callable[[bytes], None] | None = None,
     ) -> None:
+        self._on_photo = on_photo or (lambda _jpeg: None)
         self._phone = phone
         self._known_fingerprint = known_fingerprint or None
         self._fingerprint: str | None = None
@@ -786,14 +805,17 @@ class H264FrameReceiver:
         its way at a time, so the latency stays bounded.
         """
         while not self._stop.is_set():
-            packet = read_video_packet(stream)
+            is_photo, packet = read_message(stream)
             with self._send_lock:
                 pending = bytearray(USB_FRAME_ACK)
                 command = self._pending_controls.pop() if self._pending_controls else b""
                 pending.extend(struct.pack("!I", len(command)))
                 pending.extend(command)
                 connection.sendall(pending)
-            self._on_frame(packet)
+            if is_photo:
+                self._on_photo(packet)
+            else:
+                self._on_frame(packet)
 
 
 class H264Decoder:

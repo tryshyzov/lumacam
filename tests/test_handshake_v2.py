@@ -262,3 +262,34 @@ class EncryptedWifiTests(unittest.TestCase):
         self.assertEqual(pairing_code(b"certificate", "computer-1"), "300 879")
         self.assertRegex(pairing_code(b"certificate", "computer-1"), r"^\d{3} \d{3}$")
         self.assertNotEqual(pairing_code(b"certificate", "computer-1"), pairing_code(b"certificate", "computer-2"))
+
+
+class PhotoTests(unittest.TestCase):
+    def test_a_photo_message_goes_to_on_photo_not_to_the_decoder(self) -> None:
+        jpeg = b"\xff\xd8 a photo \xff\xd9"
+
+        def script(server: FakePhoneServer, client: socket.socket) -> None:
+            server.seen.append(read_exactly(client, 8))
+            length = struct.unpack("!I", read_exactly(client, 4))[0]
+            read_exactly(client, length)
+            client.sendall(message({"status": "ok", "camera": {"id": "p1"}}))
+            client.sendall(struct.pack("!I", 0x8000_0000 | len(jpeg)) + jpeg)
+            read_exactly(client, 5)
+            client.sendall(struct.pack("!I", len(ACCESS_UNIT)) + ACCESS_UNIT)
+            read_exactly(client, 5)
+            server.done.wait(2)
+
+        server = FakePhoneServer(script)
+        self.addCleanup(server.close)
+        frames, photos = [], []
+        got = threading.Event()
+        phone = Phone(id="p1", name="Redmi", link="usb", address="127.0.0.1", version="0.7.0", photo=True)
+        receiver = H264FrameReceiver(
+            None, server.port, lambda frame: (frames.append(frame), got.set()), lambda *_: None,
+            usb=True, phone=phone, hello={"id": "c", "name": "n", "token": ""}, on_photo=photos.append,
+        )
+        receiver.start()
+        self.addCleanup(receiver.stop)
+        self.assertTrue(got.wait(3))
+        self.assertEqual(photos, [jpeg])
+        self.assertEqual(frames, [ACCESS_UNIT])

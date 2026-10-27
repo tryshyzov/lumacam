@@ -7,6 +7,11 @@ STRINGS: dict[str, dict[str, str]] = {
     "ru": {
         "pause": "Пауза",
         "resume": "Продолжить",
+        "photo": "Снимок в полном разрешении (видео замрёт на секунду)",
+        "photo_taking": "Снимаем…",
+        "photo_failed": "Телефон не смог сделать снимок",
+        "photo_saved": "Снимок сохранён: {folder}/{name}",
+        "photo_not_saved": "Не удалось сохранить снимок: {error}",
         "settings": "Настройки",
         "language": "Язык",
         "profile": "Профиль",
@@ -79,6 +84,11 @@ STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "pause": "Pause",
         "resume": "Resume",
+        "photo": "Full resolution photo (the video pauses for a second)",
+        "photo_taking": "Taking a photo…",
+        "photo_failed": "The phone could not take the photo",
+        "photo_saved": "Photo saved: {folder}/{name}",
+        "photo_not_saved": "Could not save the photo: {error}",
         "settings": "Settings",
         "language": "Language",
         "profile": "Profile",
