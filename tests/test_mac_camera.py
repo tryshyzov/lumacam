@@ -69,6 +69,7 @@ class MacBackendChoiceTests(unittest.TestCase):
         own_camera = mock.Mock(device="LumaLink Camera")
         with (
             mock.patch.object(camera_backend, "MACOS", True),
+            mock.patch.object(camera_backend, "LINUX", False),
             mock.patch.object(camera_backend.mac_camera, "is_installed", return_value=True),
             mock.patch.object(camera_backend.mac_camera, "MacCameraDevice", return_value=own_camera),
         ):

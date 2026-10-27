@@ -1,0 +1,14 @@
+Package: lumalink-studio
+Version: @VERSION@
+Section: video
+Priority: optional
+Architecture: amd64
+Installed-Size: @SIZE@
+Depends: libxcb-cursor0, libegl1
+Recommends: v4l2loopback-dkms, adb
+Maintainer: LumaLink <https://github.com/tryshyzov/lumacam>
+Homepage: https://tryshyzov.github.io/lumacam/
+Description: An Android phone's camera as a webcam
+ LumaLink Studio receives video from the LumaLink app on an Android phone,
+ over USB or Wi-Fi, and offers it to video apps as the "LumaLink Camera"
+ webcam, through the v4l2loopback kernel module.

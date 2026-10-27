@@ -149,13 +149,14 @@ def discover_usb_camera(
 
 def local_ipv4_addresses() -> list[str]:
     """This computer's IPv4 addresses on its networks, loopback excluded."""
-    if sys.platform == "darwin":
+    if sys.platform != "win32":
         # The host name can take half a minute to resolve on macOS and does
-        # not cover every interface, so ask the system; tunnels such as a VPN
-        # have no broadcast address and are left out, like in USB discovery.
+        # not cover every interface; on Linux it often resolves to 127.0.1.1
+        # alone. So ask the system; tunnels such as a VPN have no broadcast
+        # address and are left out, like in USB discovery.
         return [
             address
-            for address, broadcast in _macos_ipv4_interfaces()
+            for address, broadcast in _ipv4_interfaces()
             if broadcast and not ipaddress.IPv4Address(address).is_loopback
         ]
     return sorted(
@@ -169,15 +170,15 @@ def local_ipv4_addresses() -> list[str]:
 
 def _usb_probe_targets(broadcast_address: str) -> dict[str, str]:
     """Map each local IPv4 address to where its USB discovery probe goes."""
-    if sys.platform == "darwin":
-        # macOS sends 255.255.255.255 out of the default route's interface
-        # whatever address the socket is bound to, so each probe goes to the
-        # broadcast address of its own network instead. The host name does not
-        # resolve to every interface there either, so ask the system for them.
+    if sys.platform != "win32":
+        # macOS and Linux send 255.255.255.255 out of the default route's
+        # interface whatever address the socket is bound to, so each probe goes
+        # to the broadcast address of its own network instead. The host name
+        # does not resolve to every interface there either, so ask the system.
         # Tethering networks always broadcast; tunnels such as a VPN do not.
         return {
             address: broadcast
-            for address, broadcast in _macos_ipv4_interfaces()
+            for address, broadcast in _ipv4_interfaces()
             if broadcast and not ipaddress.IPv4Address(address).is_loopback
         }
     return {
@@ -188,13 +189,21 @@ def _usb_probe_targets(broadcast_address: str) -> dict[str, str]:
 
 
 class _SockaddrIn(ctypes.Structure):
-    # The BSD layout macOS uses: a length byte comes before the family.
-    _fields_ = [
-        ("sin_len", ctypes.c_uint8),
-        ("sin_family", ctypes.c_uint8),
-        ("sin_port", ctypes.c_uint16),
-        ("sin_addr", ctypes.c_uint8 * 4),
-    ]
+    if sys.platform == "darwin":
+        # The BSD layout macOS uses: a length byte comes before the family.
+        _fields_ = [
+            ("sin_len", ctypes.c_uint8),
+            ("sin_family", ctypes.c_uint8),
+            ("sin_port", ctypes.c_uint16),
+            ("sin_addr", ctypes.c_uint8 * 4),
+        ]
+    else:
+        # Linux: a two-byte family, no length.
+        _fields_ = [
+            ("sin_family", ctypes.c_uint16),
+            ("sin_port", ctypes.c_uint16),
+            ("sin_addr", ctypes.c_uint8 * 4),
+        ]
 
 
 class _Ifaddrs(ctypes.Structure):
@@ -214,8 +223,9 @@ _IFF_UP = 0x1
 _IFF_BROADCAST = 0x2
 
 
-def _macos_ipv4_interfaces() -> list[tuple[str, str | None]]:
-    """The address and broadcast address of every IPv4 interface that is up."""
+def _ipv4_interfaces() -> list[tuple[str, str | None]]:
+    """The address and broadcast address of every IPv4 interface that is up
+    (macOS and Linux; ifa_dstaddr is the broadcast address on both)."""
     libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
     head = ctypes.POINTER(_Ifaddrs)()
     if libc.getifaddrs(ctypes.byref(head)) != 0:

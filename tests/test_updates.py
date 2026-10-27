@@ -26,6 +26,8 @@ ASSETS = (
     "LumaLinkStudio.exe",
     "LumaLinkStudio-0.5.0-macos-apple-silicon.dmg",
     "LumaLinkStudio-0.5.0-macos-intel.dmg",
+    "LumaLinkStudio-0.5.0-x86_64.AppImage",
+    "lumalink-studio_0.5.0_amd64.deb",
     "LumaLinkCompanion.apk",
 )
 
@@ -49,6 +51,7 @@ class CheckTests(unittest.TestCase):
             ("win32", "AMD64"): "LumaLinkStudio-Setup-0.5.0.exe",
             ("darwin", "arm64"): "LumaLinkStudio-0.5.0-macos-apple-silicon.dmg",
             ("darwin", "x86_64"): "LumaLinkStudio-0.5.0-macos-intel.dmg",
+            ("linux", "x86_64"): "LumaLinkStudio-0.5.0-x86_64.AppImage",
         }
         for (system, machine), expected in cases.items():
             with self.subTest(system=system, machine=machine):
@@ -67,7 +70,38 @@ class CheckTests(unittest.TestCase):
         self.assertIsNone(
             updates.check("0.4.0", lambda: release("v0.5.0", "LumaLinkCompanion.apk"), pattern)
         )
-        self.assertIsNone(updates.asset_pattern("linux", "x86_64"))
+        self.assertIsNone(updates.asset_pattern("freebsd", "amd64"))
+
+
+class LinuxUpdateTests(unittest.TestCase):
+    def test_only_the_appimage_updates_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            appimage = Path(folder) / "LumaLinkStudio.AppImage"
+            appimage.write_bytes(b"old")
+            with (
+                mock.patch.object(updates.sys, "platform", "linux"),
+                mock.patch.object(updates.sys, "frozen", True, create=True),
+            ):
+                with mock.patch.dict(os.environ, {"APPIMAGE": str(appimage)}):
+                    self.assertTrue(updates.can_update_in_place())
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    # The .deb: still told about new versions, given a link.
+                    self.assertTrue(updates.offers_updates())
+                    self.assertFalse(updates.can_update_in_place())
+
+    def test_replaces_the_appimage_file(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            current = Path(folder) / "LumaLinkStudio.AppImage"
+            current.write_bytes(b"old")
+            new = Path(folder) / "download.AppImage"
+            new.write_bytes(b"new version")
+
+            updates.install_appimage(new, current, relaunch=False)
+
+            self.assertEqual(current.read_bytes(), b"new version")
+            self.assertFalse(current.with_name(current.name + ".new").exists())
+            if os.name == "posix":
+                self.assertTrue(os.access(current, os.X_OK))
 
 
 class DownloadTests(unittest.TestCase):

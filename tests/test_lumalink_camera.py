@@ -173,6 +173,7 @@ class BackendSelectionTests(unittest.TestCase):
 
         with (
             mock.patch.object(camera_backend, "MACOS", False),
+            mock.patch.object(camera_backend, "LINUX", False),
             mock.patch.object(lumalink_camera, "is_registered", return_value=True),
             mock.patch.object(lumalink_camera, "LumaLinkCameraDevice", FakeDevice),
         ):

@@ -1792,7 +1792,7 @@ class _PanelContent(QWidget):
 
 def update_checks_enabled() -> bool:
     """The packaged app checks for updates; from source only when asked to."""
-    return updates.can_update_in_place() or os.environ.get("LUMALINK_CHECK_UPDATES") == "1"
+    return updates.offers_updates() or os.environ.get("LUMALINK_CHECK_UPDATES") == "1"
 
 
 def run() -> None:

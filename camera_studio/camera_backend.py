@@ -6,7 +6,7 @@ from typing import Protocol
 
 import numpy as np
 
-from camera_studio import lumalink_camera, mac_camera
+from camera_studio import linux_camera, lumalink_camera, mac_camera
 
 OUTPUT_WIDTH = 1280
 OUTPUT_HEIGHT = 720
@@ -14,6 +14,7 @@ OUTPUT_FPS = 30
 
 
 MACOS = sys.platform == "darwin"
+LINUX = sys.platform.startswith("linux")
 
 _BACKENDS = (
     ("obs", "OBS Virtual Camera"),
@@ -46,7 +47,12 @@ class VirtualCameraSession:
         if camera_factory is None:
             # The project's own camera needs no third-party backend.
             own_camera: CameraDevice | None = None
-            if MACOS and mac_camera.is_installed():
+            if LINUX:
+                path = linux_camera.find_device()
+                if path is None:
+                    raise RuntimeError(linux_camera.MODULE_HINT)
+                own_camera = linux_camera.LinuxCameraDevice(path, OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS)
+            elif MACOS and mac_camera.is_installed():
                 own_camera = mac_camera.MacCameraDevice()
             elif not MACOS and lumalink_camera.is_registered():
                 own_camera = lumalink_camera.LumaLinkCameraDevice()

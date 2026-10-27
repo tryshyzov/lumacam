@@ -317,7 +317,7 @@ class H264TransportTests(unittest.TestCase):
         ]
         with (
             mock.patch.object(stream.sys, "platform", "darwin"),
-            mock.patch.object(stream, "_macos_ipv4_interfaces", return_value=interfaces),
+            mock.patch.object(stream, "_ipv4_interfaces", return_value=interfaces),
         ):
             targets = stream._usb_probe_targets("255.255.255.255")
 
@@ -350,14 +350,14 @@ class H264TransportTests(unittest.TestCase):
         interfaces = [("127.0.0.1", None), ("192.168.1.20", "192.168.1.255"), ("240.0.0.2", None)]
         with (
             mock.patch.object(stream.sys, "platform", "darwin"),
-            mock.patch.object(stream, "_macos_ipv4_interfaces", return_value=interfaces),
+            mock.patch.object(stream, "_ipv4_interfaces", return_value=interfaces),
             mock.patch.object(stream.socket, "gethostname", side_effect=AssertionError),
         ):
             self.assertEqual(stream.local_ipv4_addresses(), ["192.168.1.20"])
 
-    @unittest.skipUnless(sys.platform == "darwin", "reads macOS network interfaces")
-    def test_lists_macos_network_interfaces(self) -> None:
-        addresses = [address for address, _ in stream._macos_ipv4_interfaces()]
+    @unittest.skipUnless(sys.platform in ("darwin", "linux"), "reads the system's network interfaces")
+    def test_lists_system_network_interfaces(self) -> None:
+        addresses = [address for address, _ in stream._ipv4_interfaces()]
 
         self.assertIn("127.0.0.1", addresses)
 

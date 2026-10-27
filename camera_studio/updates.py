@@ -14,6 +14,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,8 @@ def asset_pattern(system: str = sys.platform, machine: str | None = None) -> re.
         machine = machine or platform.machine()
         processor = "apple-silicon" if machine == "arm64" else "intel"
         return re.compile(rf"-macos-{processor}\.dmg$", re.IGNORECASE)
+    if system.startswith("linux"):
+        return re.compile(r"-x86_64\.AppImage$", re.IGNORECASE)
     return None
 
 
@@ -100,8 +103,23 @@ def check(
 
 
 def can_update_in_place() -> bool:
-    """Only the packaged app updates itself; running from source does not."""
+    """Only the packaged app updates itself; running from source does not.
+    On Linux only the AppImage does: the .deb is updated by installing the
+    next one, so it gets a link to the release instead."""
+    if not offers_updates():
+        return False
+    return not sys.platform.startswith("linux") or running_appimage() is not None
+
+
+def offers_updates() -> bool:
+    """Whether to look for a newer release at all: in any packaged app."""
     return bool(getattr(sys, "frozen", False)) and asset_pattern() is not None
+
+
+def running_appimage() -> Path | None:
+    """The AppImage file this app runs from (its runtime sets $APPIMAGE)."""
+    path = os.environ.get("APPIMAGE")
+    return Path(path) if path and Path(path).is_file() else None
 
 
 def download(
@@ -139,7 +157,36 @@ def install(path: Path) -> bool:
         return True
     if sys.platform == "win32":
         return install_windows(path)
+    current = running_appimage()
+    if sys.platform.startswith("linux") and current is not None:
+        install_appimage(path, current)
+        return True
     raise OSError("На этой системе программа не обновляется сама")
+
+
+def install_appimage(new: Path, current: Path, relaunch: bool = True) -> None:
+    """Put the downloaded AppImage in place of the running one and start it.
+
+    The running copy keeps working from its mounted image after the file is
+    replaced, so the new one can start as this one quits.
+    """
+    if not os.access(current.parent, os.W_OK):
+        raise PermissionError(
+            f"Нет прав на запись в «{current.parent}». Скачайте обновление с сайта и замените файл вручную."
+        )
+    staging = current.with_name(current.name + ".new")
+    shutil.copyfile(new, staging)
+    staging.chmod(0o755)
+    os.replace(staging, current)
+    if relaunch:
+        _reset_bundle_environment()
+        subprocess.Popen(
+            ["/bin/sh", "-c", f"sleep 1; exec {shlex.quote(str(current))}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
 
 def current_app_bundle() -> Path:
