@@ -10,7 +10,7 @@
 # the release tag; a pre-release's hyphen is written as an underscore).
 
 pkgname=lumalink-studio
-pkgver=0.7.0
+pkgver=0.8.0
 pkgrel=1
 pkgdesc="An Android phone's camera as a webcam"
 arch=('x86_64')
