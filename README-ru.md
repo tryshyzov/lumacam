@@ -159,3 +159,11 @@ LumaLink Camera устанавливается установщиком LumaLink
 4. Улучшенная поддержка USB-транспорта и проверка задержки/переподключения Wi-Fi.
 5. Приложение для iOS, сопоставление возможностей и совместимость с USB/Wi-Fi.
 6. Установщик/подпись, тестирование совместимости и сквозная матрица устройств.
+
+## Поддержать проект
+
+LumaLink бесплатный. Если он вам пригодился, можно поддержать разработку:
+
+- [DonationAlerts](https://www.donationalerts.com/r/tryshyzov)
+- USDT, только сеть TRON (TRC20): `TK787wDdmME8J6cpgLgqiaoV1EB6NK37hc` ([QR](https://qr.crypt.bot/?url=TK787wDdmME8J6cpgLgqiaoV1EB6NK37hc))
+

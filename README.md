@@ -181,6 +181,13 @@ LumaLink Camera is installed by the LumaLink Studio installer; no kernel driver 
 5. iOS companion, capability mapping, and USB/Wi-Fi interoperability.
 6. Installer/signing, compatibility testing, and end-to-end device matrix.
 
+## Support the project
+
+LumaLink is free. If it is useful to you, you can support development:
+
+- [DonationAlerts](https://www.donationalerts.com/r/tryshyzov)
+- USDT, TRON network (TRC20) only: `TK787wDdmME8J6cpgLgqiaoV1EB6NK37hc` ([QR](https://qr.crypt.bot/?url=TK787wDdmME8J6cpgLgqiaoV1EB6NK37hc))
+
 ## License
 
 LumaLink is released under the [Apache License 2.0](./LICENSE). Third-party components and their licenses are listed in [`NOTICE`](./NOTICE).
